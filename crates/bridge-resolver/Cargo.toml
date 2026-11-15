@@ -1,0 +1,11 @@
+[package]
+name = "bridge-resolver"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Cross-platform and cross-distribution dependency and shared library resolver"
+
+[dependencies]
+bridge-spec.workspace = true
+bridge-detect.workspace = true
+serde.workspace = true

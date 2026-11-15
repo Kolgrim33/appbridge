@@ -1,0 +1,12 @@
+[package]
+name = "bridge-build"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Mode C Source-to-platform cross-compilation and toolchain engine for AppBridge"
+
+[dependencies]
+bridge-spec.workspace = true
+bridge-detect.workspace = true
+serde.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "appbridge-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Command-line interface for the AppBridge cross-platform application portability engine"
+
+[[bin]]
+name = "appbridge"
+path = "src/main.rs"
+
+[dependencies]
+bridge-core.workspace = true
+bridge-spec.workspace = true
+bridge-detect.workspace = true
+chrono.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

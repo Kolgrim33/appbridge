@@ -1,0 +1,11 @@
+[package]
+name = "bridge-backend-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native host package manager and direct binary execution backend for AppBridge"
+
+[dependencies]
+bridge-spec.workspace = true
+bridge-detect.workspace = true
+bridge-backend-api.workspace = true

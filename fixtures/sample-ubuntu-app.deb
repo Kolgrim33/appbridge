@@ -1,0 +1,8 @@
+Package: studio-code-ubuntu
+Version: 1.95.2
+Section: x11
+Priority: optional
+Architecture: amd64
+Maintainer: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
+Depends: libc6 (>= 2.34), libgtk-3-0, libnss3, libx11-6, libasound2
+Description: Ubuntu build of Studio Code IDE packaged as a .deb archive

@@ -1,0 +1,11 @@
+[package]
+name = "bridge-backend-darling"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Experimental macOS compatibility layer backend (Darling) for Linux hosts"
+
+[dependencies]
+bridge-spec.workspace = true
+bridge-detect.workspace = true
+bridge-backend-api.workspace = true

@@ -1,0 +1,34 @@
+[package]
+name = "bridge-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AppBridge Core: Universal cross-platform application portability engine"
+
+[dependencies]
+bridge-spec.workspace = true
+bridge-detect.workspace = true
+bridge-security.workspace = true
+bridge-inspect.workspace = true
+bridge-resolver.workspace = true
+bridge-planner.workspace = true
+bridge-state.workspace = true
+bridge-desktop.workspace = true
+bridge-runner.workspace = true
+bridge-bundle.workspace = true
+bridge-convert.workspace = true
+bridge-build.workspace = true
+bridge-backend-api.workspace = true
+bridge-backend-native.workspace = true
+bridge-backend-distrobox.workspace = true
+bridge-backend-wine.workspace = true
+bridge-backend-wsl.workspace = true
+bridge-backend-vm.workspace = true
+bridge-backend-darling.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,83 @@
+schema_version = "1.0"
+compatibility_notes = [
+    "Universal multi-artifact Bridge Recipe for PhotoEditor.",
+    "One application identity across Ubuntu (.deb), Fedora (.rpm), Generic Linux (.AppImage), Windows (.exe), and macOS (.dmg).",
+]
+
+[identity]
+app_id = "com.example.photoeditor"
+name = "PhotoEditor"
+version = "4.2.0"
+vendor = "PhotoEditor Labs"
+description = "Professional cross-platform raster & RAW photo editing suite"
+homepage = "https://photoeditor.example.com"
+license = "MPL-2.0"
+
+[source]
+os = "linux"
+format = "appimage"
+arch = "x86_64"
+
+[dependencies]
+packages = ["libc6 (>= 2.34)", "libgtk-4-1"]
+shared_libraries = ["libc.so.6", "libgtk-4.so.1"]
+windows_components = []
+
+[execution]
+preferred_backends = ["native", "distrobox", "wine", "wsl"]
+target_os = ["linux", "windows", "macos"]
+executable = "photoeditor"
+default_args = []
+container_image = "ubuntu:24.04"
+
+[desktop]
+gui = true
+icon_name = "com.example.photoeditor"
+categories = ["Graphics", "Photography"]
+mime_types = ["image/png", "image/jpeg", "image/tiff"]
+terminal = false
+
+[security]
+allow_network = true
+allow_host_home = false
+allow_gpu = true
+allow_audio = false
+allow_install_scripts = false
+require_isolated_prefix = true
+
+[[artifacts]]
+os = "linux"
+distro = "ubuntu"
+format = "deb"
+arch = "x86_64"
+package_path = "photoeditor_4.2.0_amd64.deb"
+executable = "/usr/bin/photoeditor"
+
+[[artifacts]]
+os = "linux"
+distro = "fedora"
+format = "rpm"
+arch = "x86_64"
+package_path = "photoeditor-4.2.0-1.x86_64.rpm"
+executable = "/usr/bin/photoeditor"
+
+[[artifacts]]
+os = "linux"
+format = "appimage"
+arch = "x86_64"
+package_path = "PhotoEditor-4.2.0-x86_64.AppImage"
+executable = "./PhotoEditor-4.2.0-x86_64.AppImage"
+
+[[artifacts]]
+os = "windows"
+format = "exe"
+arch = "x86_64"
+package_path = "PhotoEditor-Setup-4.2.0.exe"
+executable = "PhotoEditor.exe"
+
+[[artifacts]]
+os = "macos"
+format = "dmg"
+arch = "universal"
+package_path = "PhotoEditor-4.2.0-Universal.dmg"
+executable = "/Applications/PhotoEditor.app/Contents/MacOS/PhotoEditor"

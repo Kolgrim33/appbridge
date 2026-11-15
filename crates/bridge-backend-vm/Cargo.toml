@@ -1,0 +1,11 @@
+[package]
+name = "bridge-backend-vm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Virtual machine orchestration backend (QEMU/KVM, Lima, UTM) for AppBridge"
+
+[dependencies]
+bridge-spec.workspace = true
+bridge-detect.workspace = true
+bridge-backend-api.workspace = true

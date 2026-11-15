@@ -1,0 +1,46 @@
+schema_version = "1.0"
+compatibility_notes = [
+    "Platinum compatibility under Wine 9.x+ on Linux and macOS.",
+    "Uses an isolated WINEPREFIX managed by AppBridge.",
+]
+
+[identity]
+app_id = "org.notepad-plus-plus.npp"
+name = "Notepad++"
+version = "8.6.9"
+vendor = "Don Ho"
+description = "Free source code editor and Notepad replacement for Windows"
+homepage = "https://notepad-plus-plus.org/"
+license = "GPL-3.0-or-later"
+
+[source]
+os = "windows"
+format = "exe"
+arch = "x86_64"
+
+[dependencies]
+packages = []
+shared_libraries = ["KERNEL32.dll", "USER32.dll", "GDI32.dll", "COMDLG32.dll"]
+windows_components = ["vcrun2022"]
+
+[execution]
+preferred_backends = ["native", "wine", "vm"]
+target_os = ["windows", "linux", "macos"]
+executable = "notepad++.exe"
+default_args = []
+wine_windows_version = "win10"
+
+[desktop]
+gui = true
+icon_name = "notepad-plus-plus"
+categories = ["Development", "TextEditor"]
+mime_types = ["text/plain"]
+terminal = false
+
+[security]
+allow_network = false
+allow_host_home = false
+allow_gpu = true
+allow_audio = false
+allow_install_scripts = false
+require_isolated_prefix = true

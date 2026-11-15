@@ -1,0 +1,13 @@
+[package]
+name = "bridge-planner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Intelligent, explainable cross-platform compatibility planner for AppBridge"
+
+[dependencies]
+bridge-spec.workspace = true
+bridge-detect.workspace = true
+bridge-resolver.workspace = true
+bridge-security.workspace = true
+serde.workspace = true

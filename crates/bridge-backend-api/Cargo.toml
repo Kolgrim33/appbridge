@@ -1,0 +1,12 @@
+[package]
+name = "bridge-backend-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Standard trait interface and execution primitives for AppBridge compatibility backends"
+
+[dependencies]
+bridge-spec.workspace = true
+bridge-detect.workspace = true
+serde.workspace = true
+thiserror.workspace = true

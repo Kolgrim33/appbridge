@@ -1,0 +1,12 @@
+[package]
+name = "bridge-runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Run Engine for AppBridge: direct one-step inspection, environment provisioning, and execution"
+
+[dependencies]
+bridge-spec.workspace = true
+bridge-planner.workspace = true
+bridge-backend-api.workspace = true
+serde.workspace = true

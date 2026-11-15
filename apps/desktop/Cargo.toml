@@ -1,0 +1,13 @@
+[package]
+name = "appbridge-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AppBridge Desktop IPC command layer and Tauri 2 frontend bridge"
+
+[dependencies]
+bridge-core.workspace = true
+bridge-spec.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true

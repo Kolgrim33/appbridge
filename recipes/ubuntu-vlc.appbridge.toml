@@ -1,0 +1,47 @@
+schema_version = "1.0"
+compatibility_notes = [
+    "Runs cleanly inside an Ubuntu 24.04 Distrobox container on Arch Linux and Fedora hosts.",
+    "Exports desktop launcher and PulseAudio/PipeWire socket automatically.",
+]
+
+[identity]
+app_id = "org.videolan.vlc"
+name = "VLC Media Player"
+version = "3.0.20"
+vendor = "VideoLAN"
+description = "Cross-platform multimedia player and framework"
+homepage = "https://www.videolan.org/vlc/"
+license = "GPL-2.0-or-later"
+
+[source]
+os = "linux"
+distro = "ubuntu"
+format = "deb"
+arch = "x86_64"
+
+[dependencies]
+packages = ["libc6 (>= 2.34)", "libgtk-3-0", "libasound2"]
+shared_libraries = ["libc.so.6", "libgtk-3.so.0"]
+windows_components = []
+
+[execution]
+preferred_backends = ["distrobox", "native", "wsl"]
+target_os = ["linux", "windows"]
+executable = "/usr/bin/vlc"
+default_args = []
+container_image = "ubuntu:24.04"
+
+[desktop]
+gui = true
+icon_name = "vlc"
+categories = ["AudioVideo", "Player"]
+mime_types = ["video/mp4", "video/x-matroska", "audio/mpeg"]
+terminal = false
+
+[security]
+allow_network = true
+allow_host_home = false
+allow_gpu = true
+allow_audio = true
+allow_install_scripts = false
+require_isolated_prefix = true

@@ -1,0 +1,11 @@
+[package]
+name = "bridge-backend-wsl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Windows Subsystem for Linux 2 (WSL2 / WSLg) backend for AppBridge"
+
+[dependencies]
+bridge-spec.workspace = true
+bridge-detect.workspace = true
+bridge-backend-api.workspace = true

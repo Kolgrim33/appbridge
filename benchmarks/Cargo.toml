@@ -1,0 +1,11 @@
+[package]
+name = "appbridge-benchmarks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+bridge-core.workspace = true
+bridge-spec.workspace = true
+bridge-detect.workspace = true

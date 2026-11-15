@@ -1,0 +1,53 @@
+schema_version = "1.0"
+compatibility_notes = [
+    "DirectX 12 / Vulkan game without kernel-level anti-cheat.",
+    "Automatically provisions DXVK and VKD3D-Proton inside an isolated Wine prefix.",
+]
+
+[identity]
+app_id = "com.example.cyber-arena"
+name = "Cyber Arena (DX12 / No Kernel Anti-Cheat)"
+version = "2.4.0"
+vendor = "Indie Studio"
+description = "Fast-paced DirectX 12 action game using user-mode EOS anti-cheat"
+homepage = "https://example.com/cyber-arena"
+license = "Proprietary"
+
+[source]
+os = "windows"
+format = "exe"
+arch = "x86_64"
+
+[dependencies]
+packages = []
+shared_libraries = [
+    "KERNEL32.dll",
+    "d3d12.dll",
+    "dxgi.dll",
+    "xinput1_4.dll",
+    "vcruntime140.dll",
+    "EasyAntiCheat_EOS.dll",
+]
+windows_components = ["vcrun2022", "dxvk", "vkd3d-proton"]
+
+[execution]
+preferred_backends = ["wine", "native"]
+target_os = ["linux", "windows", "macos"]
+executable = "CyberArena.exe"
+default_args = ["-dx12"]
+wine_windows_version = "win10"
+
+[desktop]
+gui = true
+icon_name = "cyber-arena"
+categories = ["Game", "ActionGame"]
+mime_types = []
+terminal = false
+
+[security]
+allow_network = true
+allow_host_home = false
+allow_gpu = true
+allow_audio = true
+allow_install_scripts = false
+require_isolated_prefix = true

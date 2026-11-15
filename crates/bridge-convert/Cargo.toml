@@ -1,0 +1,19 @@
+[package]
+name = "bridge-convert"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Package conversion engine (DEB-to-Arch, AppImage AppDir, and Universal .appbridge bundling)"
+
+[dependencies]
+bridge-spec.workspace = true
+bridge-detect.workspace = true
+bridge-security.workspace = true
+bridge-planner.workspace = true
+bridge-bundle.workspace = true
+ar.workspace = true
+tar.workspace = true
+flate2.workspace = true
+serde.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
