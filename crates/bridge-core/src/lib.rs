@@ -10,7 +10,9 @@ pub use bridge_backend_api::{
 };
 pub use bridge_build::{BuildError, SourceBuildEngine, SourceBuildReceipt};
 pub use bridge_bundle::{
-    BundleDeploymentKind, BundleError, BundleManager, BundleManifest, BundleVerificationReport,
+    BundleDeltaPlan, BundleDeploymentKind, BundleError, BundleManager, BundleManifest, BundleSbom,
+    BundleSignature, BundleSigningKey, BundleVerificationReport, RuntimeSpecification,
+    SbomComponent,
 };
 pub use bridge_convert::{
     ConversionEngine, ConversionReceipt, ConvertError, create_synthetic_deb_archive,
@@ -23,7 +25,10 @@ pub use bridge_planner::{
     StrategyCandidate,
 };
 pub use bridge_resolver::{DependencyResolution, DependencyResolver};
-pub use bridge_runner::RunOutcome;
+pub use bridge_runner::{
+    CancellationToken, CrashReport, ExecutionLifecycleManager, ManagedExecutionResult,
+    ProcessExecutionConfig, RollbackGuard, RunOutcome, RunnerError,
+};
 pub use bridge_security::{RiskLevel, SecurityAssessment, SecurityEngine, SecurityError};
 pub use bridge_spec::*;
 pub use bridge_state::{AuditLogEntry, EnvironmentBackupSnapshot, StateError, StateRegistry};
@@ -69,6 +74,9 @@ pub enum CoreError {
 
     #[error(transparent)]
     Build(#[from] BuildError),
+
+    #[error(transparent)]
+    Runner(#[from] RunnerError),
 
     #[error("Application '{app_id}' is not executable on {host_os}: {reason}")]
     UnsupportedApplication {
@@ -163,9 +171,50 @@ impl AppBridgeEngine {
         self.registry.data_root()
     }
 
+    /// Returns an `ExecutionLifecycleManager` for monitored process execution, log collection,
+    /// timeout enforcement, cancellation, and crash report generation.
+    pub fn lifecycle_manager(&self) -> ExecutionLifecycleManager {
+        ExecutionLifecycleManager::new(self.registry.data_root())
+    }
+
+    /// Registers a custom or third-party `ExecutionBackend` adapter into the engine.
+    pub fn register_backend(&mut self, backend: Box<dyn ExecutionBackend>) {
+        self.backends.insert(backend.id(), backend);
+    }
+
     /// Inspect an application package, binary, bundle, or `appbridge.toml` recipe.
     pub fn inspect(&self, path: impl AsRef<Path>) -> Result<ApplicationDescriptor, CoreError> {
         Ok(self.inspector.inspect(path)?)
+    }
+
+    /// Ergonomic SDK helper: generate a `RunPlan` directly from an inspected `ApplicationDescriptor`.
+    pub fn create_run_plan_for(&self, descriptor: &ApplicationDescriptor) -> RunPlan {
+        self.planner.create_run_plan(descriptor, &self.host)
+    }
+
+    /// Ergonomic SDK helper: generate a `ConversionPlan` directly from an inspected `ApplicationDescriptor`.
+    pub fn create_conversion_plan_for(
+        &self,
+        descriptor: &ApplicationDescriptor,
+        target: ConversionTarget,
+    ) -> ConversionPlan {
+        self.planner
+            .create_conversion_plan(descriptor, target, &self.host)
+    }
+
+    /// Ergonomic SDK helper: execute an inspected `ApplicationDescriptor` using its `RunPlan`.
+    pub fn execute(
+        &self,
+        descriptor: &ApplicationDescriptor,
+        plan: &RunPlan,
+        mode: ExecutionMode,
+    ) -> Result<RunOutcome, CoreError> {
+        self.run_file(
+            &descriptor.package_path,
+            &[],
+            plan.recommended_backend,
+            mode,
+        )
     }
 
     /// Generate an explainable `ExecutionPlan` (`RunPlan`) for the given package on the current host.
@@ -280,6 +329,7 @@ impl AppBridgeEngine {
         };
 
         let receipt = backend.install(&ctx)?;
+        let rollback_guard = RollbackGuard::new(&receipt.install_dir);
 
         let launcher_path = if descriptor.is_gui {
             Some(self.desktop.create_launcher(
@@ -312,6 +362,7 @@ impl AppBridgeEngine {
         };
 
         self.registry.register_app(&record, &recipe)?;
+        rollback_guard.commit();
         Ok((record, receipt))
     }
 

@@ -9,8 +9,8 @@ use bridge_resolver::{DependencyResolution, DependencyResolver};
 use bridge_security::{SecurityAssessment, SecurityEngine};
 use bridge_spec::{
     ApplicationDescriptor, BackendId, BridgeRecipe, CapabilityMatrix, CompatibilityStatus,
-    ConversionMode, ConversionTarget, CpuArch, ExecutionStrategy, LinuxDistro, OsFamily,
-    PackageFormat, RecipeSecurityPolicy, SpecError,
+    ConversionClassification, ConversionMode, ConversionTarget, CpuArch, ExecutionStrategy,
+    LinuxDistro, OsFamily, PackageFormat, RecipeSecurityPolicy, SpecError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -27,10 +27,12 @@ pub struct ConversionPlan {
     pub source_os: OsFamily,
     pub target_format: ConversionTarget,
     pub mode: ConversionMode,
+    pub classification: ConversionClassification,
     pub capabilities: CapabilityMatrix,
     pub is_safe_to_convert: bool,
     pub mapped_dependencies: Vec<String>,
     pub unmapped_dependencies: Vec<String>,
+    pub unverified_sonames: Vec<String>,
     pub script_warnings: Vec<String>,
     pub rationale: Vec<String>,
 }
@@ -151,15 +153,28 @@ impl CompatibilityPlanner {
         }
 
         let mut script_warnings = Vec::new();
+        let declarative_scripts_only = descriptor
+            .extra_metadata
+            .get("maintainer_script_kind")
+            .map(|k| k == "declarative_triggers")
+            .unwrap_or(false);
+
         if descriptor.has_install_scripts {
-            script_warnings.push(
-                "Source package contains maintainer scripts (preinst/postinst/prerm/postrm) that make distribution-specific assumptions."
-                    .to_string(),
-            );
+            if declarative_scripts_only {
+                script_warnings.push(
+                    "Source package contains declarative cache triggers (ldconfig / update-desktop-database / gtk-update-icon-cache) which are translated automatically to Pacman ALPM hooks."
+                        .to_string(),
+                );
+            } else {
+                script_warnings.push(
+                    "Source package contains arbitrary maintainer scripts (preinst/postinst/prerm/postrm) that make distribution-specific assumptions."
+                        .to_string(),
+                );
+            }
         }
 
         let mut rationale = Vec::new();
-        let (mode, is_safe, capabilities) = match (descriptor.format, target) {
+        let (mode, classification, is_safe, capabilities) = match (descriptor.format, target) {
             // Mode B: Universal .appbridge bundling is valid for any inspectable application package
             (fmt, ConversionTarget::AppBridge) if fmt != PackageFormat::Unknown => {
                 rationale.push(format!(
@@ -172,6 +187,7 @@ impl CompatibilityPlanner {
                 );
                 (
                     ConversionMode::UniversalAppBridgeBundle,
+                    ConversionClassification::SafeToConvert,
                     true,
                     CapabilityMatrix {
                         installable: true,
@@ -190,13 +206,14 @@ impl CompatibilityPlanner {
                 PackageFormat::Rpm,
                 ConversionTarget::Deb | ConversionTarget::Arch | ConversionTarget::AppImage,
             ) => {
-                if descriptor.has_install_scripts {
+                if descriptor.has_install_scripts && !declarative_scripts_only {
                     rationale.push(
-                        "Unsafe Native Repackaging Blocked: Source package contains maintainer scripts (postinst/preinst) that cannot be safely translated to target package hooks automatically."
+                        "UNSUPPORTED (Unsafe Maintainer Scripts): Source package contains non-declarative maintainer scripts (postinst/preinst) that cannot be safely translated to target package hooks automatically."
                             .to_string(),
                     );
                     (
                         ConversionMode::NativePackageRepackaging,
+                        ConversionClassification::Unsupported,
                         false,
                         CapabilityMatrix {
                             installable: true,
@@ -209,11 +226,12 @@ impl CompatibilityPlanner {
                     )
                 } else if !unmapped_deps.is_empty() {
                     rationale.push(format!(
-                        "Unsafe Native Repackaging Blocked: Unmapped distribution-specific dependencies detected ({}). Use Distrobox execution or a .appbridge bundle instead.",
+                        "UNSUPPORTED (Unmapped Dependencies): Unmapped distribution-specific dependencies detected ({}). Use Distrobox execution or a .appbridge bundle instead.",
                         unmapped_deps.join(", ")
                     ));
                     (
                         ConversionMode::NativePackageRepackaging,
+                        ConversionClassification::Unsupported,
                         false,
                         CapabilityMatrix {
                             installable: true,
@@ -224,15 +242,37 @@ impl CompatibilityPlanner {
                             unsupported: true,
                         },
                     )
+                } else if declarative_scripts_only || !dep_res.unverified_sonames.is_empty() {
+                    rationale.push(format!(
+                        "CONVERT_WITH_WARNINGS: Source {} can be converted to {}, with warnings (declarative script hooks={} or unverified shared library SONAMEs={:?}).",
+                        descriptor.format,
+                        target,
+                        declarative_scripts_only,
+                        dep_res.unverified_sonames
+                    ));
+                    (
+                        ConversionMode::NativePackageRepackaging,
+                        ConversionClassification::ConvertWithWarnings,
+                        true,
+                        CapabilityMatrix {
+                            installable: true,
+                            executable: true,
+                            repackagable: true,
+                            bundleable: true,
+                            cross_compilable: false,
+                            unsupported: false,
+                        },
+                    )
                 } else {
                     rationale.push(format!(
-                        "Mode A (Safe Native Package Repackaging): Source {} has no unsafe maintainer scripts and all {} declared dependencies map cleanly to {}.",
+                        "SAFE_TO_CONVERT (Mode A Native Package Repackaging): Source {} has no unsafe maintainer scripts and all {} declared dependencies map cleanly to {}.",
                         descriptor.format,
                         mapped_deps.len(),
                         target
                     ));
                     (
                         ConversionMode::NativePackageRepackaging,
+                        ConversionClassification::SafeToConvert,
                         true,
                         CapabilityMatrix {
                             installable: true,
@@ -249,11 +289,12 @@ impl CompatibilityPlanner {
             // Explicit rejection of fake cross-OS binary conversions (e.g. .exe -> Arch .pkg.tar.zst)
             _ => {
                 rationale.push(format!(
-                    "Unsupported Conversion: Cannot convert {} ({}) directly into a native {}. Precompiled binaries for {} cannot be repackaged into native packages for another operating system ABI.",
+                    "UNSUPPORTED: Cannot convert {} ({}) directly into a native {}. Precompiled binaries for {} cannot be repackaged into native packages for another operating system ABI.",
                     descriptor.format, descriptor.source_os, target, descriptor.source_os
                 ));
                 (
                     ConversionMode::Unsupported,
+                    ConversionClassification::Unsupported,
                     false,
                     CapabilityMatrix {
                         installable: false,
@@ -274,10 +315,12 @@ impl CompatibilityPlanner {
             source_os: descriptor.source_os,
             target_format: target,
             mode,
+            classification,
             capabilities,
             is_safe_to_convert: is_safe,
             mapped_dependencies: mapped_deps,
             unmapped_dependencies: unmapped_deps,
+            unverified_sonames: dep_res.unverified_sonames,
             script_warnings,
             rationale,
         }

@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 use bridge_core::{
-    AppBridgeEngine, BackendId, BridgeRecipe, CompatibilityEntry, ConversionTarget, CpuArch,
-    ExecutionMode, LinuxDistro, OsFamily, VerificationStatus,
+    AppBridgeEngine, BackendId, BridgeRecipe, CompatibilityEntry, CompatibilityTrustLevel,
+    ConversionTarget, CpuArch, ExecutionMode, LinuxDistro, OsFamily, VerificationStatus,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use std::fs;
@@ -453,6 +453,7 @@ fn main() -> Result<()> {
                 if let Some(cp) = conv_plan {
                     println!("\n=== AppBridge ConversionPlan (Conversion Engine) ===");
                     println!("Conversion Mode : {}", cp.mode);
+                    println!("Classification  : {}", cp.classification);
                     println!("Target Format   : {}", cp.target_format);
                     println!("Safe to Convert : {}", cp.is_safe_to_convert);
                     if !cp.mapped_dependencies.is_empty() {
@@ -797,13 +798,18 @@ fn main() -> Result<()> {
                 let entry = CompatibilityEntry {
                     app_id: id.clone(),
                     app_version: ver,
+                    binary_sha256: None,
                     host_os: engine.host().os,
                     host_distro: engine.host().distro.as_ref().map(|d| d.to_string()),
                     arch: engine.host().arch,
+                    kernel_version: engine.host().kernel_version.clone(),
                     backend: b.into(),
                     backend_version: "host-verified".to_string(),
+                    graphics_driver: engine.host().display_protocol.clone(),
                     status: VerificationStatus::Verified,
+                    trust_level: CompatibilityTrustLevel::Reported,
                     evidence: evidence.unwrap_or_else(|| "Verified via AppBridge CLI".to_string()),
+                    execution_log_excerpt: None,
                     recorded_at: chrono::Utc::now(),
                 };
                 engine.submit_compatibility(&entry)?;
@@ -815,18 +821,24 @@ fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&entries)?);
             } else {
                 println!(
-                    "{:<28} {:<8} {:<18} {:<10} {:<10} EVIDENCE",
-                    "APPLICATION", "VERSION", "HOST", "BACKEND", "RESULT"
+                    "{:<28} {:<8} {:<18} {:<10} {:<10} {:<10} EVIDENCE",
+                    "APPLICATION", "VERSION", "HOST", "BACKEND", "RESULT", "TRUST"
                 );
-                println!("{}", "-".repeat(110));
+                println!("{}", "-".repeat(120));
                 for e in entries {
                     let host_label = match &e.host_distro {
                         Some(d) => d.clone(),
                         None => e.host_os.to_string(),
                     };
                     println!(
-                        "{:<28} {:<8} {:<18} {:<10} {:<10} {}",
-                        e.app_id, e.app_version, host_label, e.backend, e.status, e.evidence
+                        "{:<28} {:<8} {:<18} {:<10} {:<10} {:<10} {}",
+                        e.app_id,
+                        e.app_version,
+                        host_label,
+                        e.backend,
+                        e.status,
+                        e.trust_level,
+                        e.evidence
                     );
                 }
             }

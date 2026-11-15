@@ -3,10 +3,17 @@ name = "bridge-runner"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Run Engine for AppBridge: direct one-step inspection, environment provisioning, and execution"
+description = "Run Engine & Execution Lifecycle Manager for AppBridge"
 
 [dependencies]
 bridge-spec.workspace = true
 bridge-planner.workspace = true
 bridge-backend-api.workspace = true
+bridge-security.workspace = true
+chrono.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

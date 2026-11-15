@@ -242,6 +242,10 @@ impl InspectionEngine {
         let mut control_text = String::new();
         let mut has_scripts = false;
         let mut script_names = Vec::new();
+        let mut all_scripts_declarative = true;
+        let mut desktop_entries = Vec::new();
+        let mut icon_files = Vec::new();
+        let mut mime_files = Vec::new();
 
         while let Some(Ok(mut entry)) = archive.next_entry() {
             let identifier = String::from_utf8_lossy(entry.header().identifier()).to_string();
@@ -257,7 +261,7 @@ impl InspectionEngine {
 
                 let mut tar = Archive::new(tar_reader);
                 if let Ok(entries) = tar.entries() {
-                    for tar_entry in entries.flatten() {
+                    for mut tar_entry in entries.flatten() {
                         let entry_path = tar_entry
                             .path()
                             .ok()
@@ -266,14 +270,65 @@ impl InspectionEngine {
                         let clean_name = entry_path.trim_start_matches("./");
                         if clean_name == "control" {
                             let mut s = String::new();
-                            let mut r = tar_entry;
-                            if r.read_to_string(&mut s).is_ok() {
+                            if tar_entry.read_to_string(&mut s).is_ok() {
                                 control_text = s;
                             }
                         } else if matches!(clean_name, "preinst" | "postinst" | "prerm" | "postrm")
                         {
                             has_scripts = true;
                             script_names.push(clean_name.to_string());
+                            let mut script_body = String::new();
+                            let _ = tar_entry.read_to_string(&mut script_body);
+                            if !Self::is_declarative_maintainer_script(&script_body) {
+                                all_scripts_declarative = false;
+                            }
+                        }
+                    }
+                }
+            } else if identifier.starts_with("data.tar") {
+                let mut tar_bytes = Vec::new();
+                let _ = entry.read_to_end(&mut tar_bytes);
+
+                let tar_reader: Box<dyn Read> = if identifier.ends_with(".gz") {
+                    Box::new(GzDecoder::new(&tar_bytes[..]))
+                } else {
+                    Box::new(&tar_bytes[..])
+                };
+
+                let mut tar = Archive::new(tar_reader);
+                if let Ok(entries) = tar.entries() {
+                    for mut tar_entry in entries.flatten() {
+                        let entry_path = tar_entry
+                            .path()
+                            .ok()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_default();
+                        let clean = entry_path.trim_start_matches("./").to_string();
+                        if clean.starts_with("usr/share/applications/")
+                            && clean.ends_with(".desktop")
+                        {
+                            desktop_entries.push(clean.clone());
+                            desc.is_gui = true;
+                        } else if clean.starts_with("usr/share/icons/")
+                            || clean.starts_with("usr/share/pixmaps/")
+                        {
+                            icon_files.push(clean.clone());
+                        } else if clean.starts_with("usr/share/mime/") {
+                            mime_files.push(clean.clone());
+                        } else if (clean.starts_with("usr/bin/") || clean.starts_with("opt/"))
+                            && tar_entry.header().entry_type().is_file()
+                        {
+                            let mut bin_bytes = Vec::new();
+                            if tar_entry.read_to_end(&mut bin_bytes).is_ok()
+                                && let Ok(Object::Elf(elf)) = Object::parse(&bin_bytes)
+                            {
+                                for lib in elf.libraries {
+                                    let lib_s = lib.to_string();
+                                    if !desc.shared_libraries.contains(&lib_s) {
+                                        desc.shared_libraries.push(lib_s);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -293,9 +348,69 @@ impl InspectionEngine {
         if !script_names.is_empty() {
             desc.extra_metadata
                 .insert("maintainer_scripts".to_string(), script_names.join(","));
+            desc.extra_metadata.insert(
+                "maintainer_script_kind".to_string(),
+                if all_scripts_declarative {
+                    "declarative_triggers".to_string()
+                } else {
+                    "arbitrary_script".to_string()
+                },
+            );
+        }
+        if !desktop_entries.is_empty() {
+            desc.extra_metadata
+                .insert("desktop_entries".to_string(), desktop_entries.join(","));
+        }
+        if !icon_files.is_empty() {
+            desc.extra_metadata
+                .insert("icon_files".to_string(), icon_files.join(","));
+        }
+        if !mime_files.is_empty() {
+            desc.extra_metadata
+                .insert("mime_files".to_string(), mime_files.join(","));
         }
         desc.has_install_scripts |= has_scripts;
         Ok(desc)
+    }
+
+    /// Returns `true` if a Debian maintainer script only invokes standard declarative cache
+    /// refresh triggers (`ldconfig`, `update-desktop-database`, `gtk-update-icon-cache`,
+    /// `update-mime-database`, `glib-compile-schemas`) that Pacman handles via alpm hooks.
+    fn is_declarative_maintainer_script(script: &str) -> bool {
+        let mut saw_command = false;
+        const SAFE_PREFIXES: &[&str] = &[
+            "ldconfig",
+            "/sbin/ldconfig",
+            "update-desktop-database",
+            "gtk-update-icon-cache",
+            "update-mime-database",
+            "glib-compile-schemas",
+            "set -e",
+            "exit 0",
+            "true",
+        ];
+
+        for raw_line in script.lines() {
+            let line = raw_line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            saw_command = true;
+            if line.contains(';')
+                || line.contains('|')
+                || line.contains('`')
+                || line.contains("$(")
+                || line.contains('&')
+                || line.contains('>')
+                || line.contains('<')
+            {
+                return false;
+            }
+            if !SAFE_PREFIXES.iter().any(|p| line.starts_with(p)) {
+                return false;
+            }
+        }
+        saw_command
     }
 
     pub fn apply_debian_control_fields(desc: &mut ApplicationDescriptor, control: &str) {

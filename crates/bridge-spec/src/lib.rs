@@ -243,6 +243,29 @@ impl fmt::Display for ConversionMode {
     }
 }
 
+/// Three-tier package conversion safety classification (Priority 1 — 0.1.1 Hardening).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ConversionClassification {
+    /// All dependencies, shared libraries, and files map cleanly without risky scripts.
+    SafeToConvert,
+    /// Package can be converted, but requires attention (e.g. unmapped optional dependencies,
+    /// declarative desktop/icon triggers translated to pacman hooks, or unverified SONAMEs).
+    ConvertWithWarnings,
+    /// Package cannot be safely converted (e.g. cross-OS binary masquerading or arbitrary maintainer scripts).
+    Unsupported,
+}
+
+impl fmt::Display for ConversionClassification {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SafeToConvert => write!(f, "SAFE_TO_CONVERT"),
+            Self::ConvertWithWarnings => write!(f, "CONVERT_WITH_WARNINGS"),
+            Self::Unsupported => write!(f, "UNSUPPORTED"),
+        }
+    }
+}
+
 /// Explicit capability matrix preventing conflation of installation, execution, repackaging,
 /// bundling, and source compilation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -449,19 +472,67 @@ impl fmt::Display for VerificationStatus {
     }
 }
 
+/// Trust tier for entries in the Verified Compatibility Registry (Priority 5 — 0.3.0).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum CompatibilityTrustLevel {
+    /// Submitted by a community user.
+    #[default]
+    Reported,
+    /// Independently reproduced by a second machine or maintainer.
+    Reproduced,
+    /// Passed an automated CI/CD execution verification pipeline.
+    Verified,
+}
+
+impl fmt::Display for CompatibilityTrustLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Reported => write!(f, "Reported"),
+            Self::Reproduced => write!(f, "Reproduced"),
+            Self::Verified => write!(f, "Verified"),
+        }
+    }
+}
+
 /// Evidence-backed entry in the Verified Compatibility Registry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompatibilityEntry {
     pub app_id: String,
     pub app_version: String,
+    #[serde(default)]
+    pub binary_sha256: Option<String>,
     pub host_os: OsFamily,
     pub host_distro: Option<String>,
     pub arch: CpuArch,
+    #[serde(default)]
+    pub kernel_version: Option<String>,
     pub backend: BackendId,
     pub backend_version: String,
+    #[serde(default)]
+    pub graphics_driver: Option<String>,
     pub status: VerificationStatus,
+    #[serde(default)]
+    pub trust_level: CompatibilityTrustLevel,
     pub evidence: String,
+    #[serde(default)]
+    pub execution_log_excerpt: Option<String>,
     pub recorded_at: DateTime<Utc>,
+}
+
+impl CompatibilityEntry {
+    /// Returns `true` if this compatibility record is stale/outdated because the application
+    /// version or the compatibility backend major/minor version has changed.
+    pub fn is_outdated_for(
+        &self,
+        current_app_version: &str,
+        current_backend_version: &str,
+    ) -> bool {
+        self.app_version.trim() != current_app_version.trim()
+            || self.backend_version.trim() != current_backend_version.trim()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -10,8 +10,8 @@ use bridge_detect::HostProfile;
 use bridge_planner::{CompatibilityPlanner, ConversionPlan};
 use bridge_security::{SecurityEngine, SecurityError};
 use bridge_spec::{
-    ApplicationDescriptor, BackendId, ConversionMode, ConversionTarget, CpuArch, OsFamily,
-    PackageFormat,
+    ApplicationDescriptor, BackendId, ConversionClassification, ConversionMode, ConversionTarget,
+    CpuArch, OsFamily, PackageFormat,
 };
 use flate2::Compression;
 use flate2::read::GzDecoder;
@@ -50,11 +50,14 @@ pub enum ConvertError {
 pub struct ConversionReceipt {
     pub app_id: String,
     pub mode: ConversionMode,
+    pub classification: ConversionClassification,
     pub source_format: PackageFormat,
     pub target_format: ConversionTarget,
     pub output_path: PathBuf,
     pub output_sha256: String,
     pub mapped_dependencies: Vec<String>,
+    #[serde(default)]
+    pub preserved_desktop_entries: Vec<String>,
     pub notes: Vec<String>,
 }
 
@@ -68,6 +71,16 @@ impl ConversionEngine {
         Self {
             planner: CompatibilityPlanner::new(),
         }
+    }
+
+    /// Checks whether any relative file path in `package_files` already exists in `target_root`
+    /// and would be overwritten during installation.
+    pub fn check_file_conflicts(target_root: &Path, package_files: &[PathBuf]) -> Vec<PathBuf> {
+        package_files
+            .iter()
+            .filter(|rel| target_root.join(rel).is_file())
+            .cloned()
+            .collect()
     }
 
     /// Evaluate and execute a conversion from `descriptor` to `target`.
@@ -98,6 +111,12 @@ impl ConversionEngine {
             });
         }
 
+        let preserved_desktop_entries = descriptor
+            .extra_metadata
+            .get("desktop_entries")
+            .map(|s| s.split(',').map(|x| x.to_string()).collect())
+            .unwrap_or_default();
+
         match target {
             ConversionTarget::AppBridge => {
                 let target_os = target_os_override.unwrap_or(host.os);
@@ -113,11 +132,13 @@ impl ConversionEngine {
                 let receipt = ConversionReceipt {
                     app_id: manifest.app_id,
                     mode: ConversionMode::UniversalAppBridgeBundle,
+                    classification: plan.classification,
                     source_format: descriptor.format,
                     target_format: ConversionTarget::AppBridge,
                     output_path: output_path.to_path_buf(),
                     output_sha256: sha256,
                     mapped_dependencies: plan.mapped_dependencies.clone(),
+                    preserved_desktop_entries,
                     notes: vec![
                         format!(
                             "Created Universal AppBridge Bundle (.appbridge) targeting {} via backend '{}'.",
@@ -136,14 +157,17 @@ impl ConversionEngine {
                 let receipt = ConversionReceipt {
                     app_id: descriptor.app_id.clone(),
                     mode: ConversionMode::NativePackageRepackaging,
+                    classification: plan.classification,
                     source_format: descriptor.format,
                     target_format: ConversionTarget::Arch,
                     output_path: output_path.to_path_buf(),
                     output_sha256: sha256,
                     mapped_dependencies: plan.mapped_dependencies.clone(),
+                    preserved_desktop_entries,
                     notes: vec![format!(
-                        "Repackaged {} into Arch Linux package with .PKGINFO and {} mapped dependencies.",
+                        "Repackaged {} into Arch Linux package ({}) with .PKGINFO and {} mapped dependencies.",
                         descriptor.name,
+                        plan.classification,
                         plan.mapped_dependencies.len()
                     )],
                 };
@@ -156,11 +180,13 @@ impl ConversionEngine {
                 let receipt = ConversionReceipt {
                     app_id: descriptor.app_id.clone(),
                     mode: ConversionMode::NativePackageRepackaging,
+                    classification: plan.classification,
                     source_format: descriptor.format,
                     target_format: ConversionTarget::AppImage,
                     output_path: output_path.to_path_buf(),
                     output_sha256: sha256,
                     mapped_dependencies: plan.mapped_dependencies.clone(),
+                    preserved_desktop_entries,
                     notes: vec![
                         "Generated portable AppImage archive structure with AppRun and desktop metadata."
                             .to_string(),
@@ -356,6 +382,8 @@ impl ConversionEngine {
                 d_hdr.set_entry_type(EntryType::Directory);
                 d_hdr.set_size(0);
                 d_hdr.set_mode(0o755);
+                d_hdr.set_uid(0);
+                d_hdr.set_gid(0);
                 d_hdr.set_mtime(1_700_000_000);
                 d_hdr.set_cksum();
                 let mut dir_str = dir_rel.display().to_string();
@@ -368,9 +396,18 @@ impl ConversionEngine {
             for rel in &extracted_files {
                 let full = root.join(rel);
                 let data = fs::read(&full)?;
+                let rel_str = rel.display().to_string();
+                let is_exec = rel_str.starts_with("usr/bin/")
+                    || rel_str.starts_with("usr/sbin/")
+                    || rel_str.starts_with("bin/")
+                    || rel_str.starts_with("sbin/")
+                    || (data.len() >= 4 && &data[0..4] == b"\x7FELF")
+                    || data.starts_with(b"#!");
                 let mut f_hdr = Header::new_gnu();
                 f_hdr.set_size(data.len() as u64);
-                f_hdr.set_mode(0o755);
+                f_hdr.set_mode(if is_exec { 0o755 } else { 0o644 });
+                f_hdr.set_uid(0);
+                f_hdr.set_gid(0);
                 f_hdr.set_mtime(1_700_000_000);
                 f_hdr.set_cksum();
                 builder.append_data(&mut f_hdr, rel, &data[..])?;
@@ -500,6 +537,33 @@ pub fn create_synthetic_deb_with_payload(
         hdr.set_mode(0o755);
         hdr.set_cksum();
         tar.append_data(&mut hdr, format!("usr/bin/{pkg_name}"), binary_payload)?;
+
+        let desktop_entry = format!(
+            "[Desktop Entry]\nType=Application\nName={pkg_name}\nExec=/usr/bin/{pkg_name}\nIcon={pkg_name}\nCategories=Utility;\n"
+        );
+        let mut dhdr = Header::new_gnu();
+        dhdr.set_size(desktop_entry.len() as u64);
+        dhdr.set_mode(0o644);
+        dhdr.set_cksum();
+        tar.append_data(
+            &mut dhdr,
+            format!("usr/share/applications/{pkg_name}.desktop"),
+            desktop_entry.as_bytes(),
+        )?;
+
+        let svg_icon = format!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 64 64\"><title>{pkg_name}</title></svg>\n"
+        );
+        let mut ihdr = Header::new_gnu();
+        ihdr.set_size(svg_icon.len() as u64);
+        ihdr.set_mode(0o644);
+        ihdr.set_cksum();
+        tar.append_data(
+            &mut ihdr,
+            format!("usr/share/icons/hicolor/scalable/apps/{pkg_name}.svg"),
+            svg_icon.as_bytes(),
+        )?;
+
         let gz = tar.into_inner()?;
         gz.finish()?;
     }

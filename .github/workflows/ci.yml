@@ -1,4 +1,4 @@
-name: AppBridge 0.1.0 CI & Engineering Validation
+name: AppBridge CI & Cross-Platform Engineering Validation
 
 on:
   push:
@@ -12,9 +12,9 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # 1. Core Formatting, Static Analysis, and Workspace Unit/Integration Suite
+  # 1. Core Formatting, Static Analysis, and Workspace Unit/Integration Suite (Linux)
   lint-and-test:
-    name: Rust Format, Clippy & Workspace Tests
+    name: Rust Format, Clippy & Workspace Tests (Linux)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -45,7 +45,33 @@ jobs:
       - name: Build SDK example
         run: cargo run -p bridge-core --example embed_sdk
 
-  # 2. Deliverable 1: Real Arch Linux Container `pacman -U` Installation Verification
+  # 2. Priority 4: Cross-Platform CI Matrix (Linux, Windows, macOS)
+  cross-platform-matrix:
+    name: Cross-Platform Matrix (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Swatinem Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check workspace compilation & Clippy on ${{ matrix.os }}
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run cross-platform test suite on ${{ matrix.os }}
+        run: cargo test --workspace
+
+  # 3. Deliverable 1: Real Arch Linux Container `pacman -U` Installation Verification
   arch-pacman-conversion-e2e:
     name: Arch Linux Container (DEB -> .pkg.tar.zst -> pacman -U)
     runs-on: ubuntu-latest
@@ -86,7 +112,7 @@ jobs:
           pacman -Qi appbridge-sdk-demo
           /usr/bin/appbridge-sdk-demo
 
-  # 3. Deliverable 3 (Part A): Produce .appbridge Bundle on Runner VM #1
+  # 4. Deliverable 3 (Part A): Produce .appbridge Bundle on Runner VM #1
   bundle-producer-vm:
     name: Bundle Producer (VM Runner A)
     runs-on: ubuntu-latest
@@ -126,7 +152,7 @@ jobs:
           path: /tmp/producer-out/portable-hello.appbridge
           retention-days: 5
 
-  # 4. Deliverable 3 (Part B): Verify, Install & Execute .appbridge Bundle on Separate Clean Runner VM #2
+  # 5. Deliverable 3 (Part B): Verify, Install & Execute .appbridge Bundle on Separate Clean Runner VM #2
   bundle-consumer-vm:
     name: Bundle Consumer (Separate VM Runner B)
     needs: bundle-producer-vm
