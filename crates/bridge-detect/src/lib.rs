@@ -62,6 +62,9 @@ impl HostProfile {
             "snap",
             "winget",
             "brew",
+            "cargo",
+            "cmake",
+            "make",
         ];
 
         let mut available_tools = BTreeMap::new();

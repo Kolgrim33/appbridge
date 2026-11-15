@@ -234,6 +234,7 @@ name = "bridge-build"
 version = "0.2.0"
 dependencies = [
  "bridge-detect",
+ "bridge-security",
  "bridge-spec",
  "serde",
  "thiserror 2.0.21",
@@ -299,6 +300,7 @@ dependencies = [
  "bridge-state",
  "chrono",
  "dirs",
+ "flate2",
  "serde",
  "tempfile",
  "thiserror 2.0.21",
@@ -362,13 +364,9 @@ name = "bridge-runner"
 version = "0.2.0"
 dependencies = [
  "bridge-backend-api",
- "bridge-bundle",
- "bridge-detect",
- "bridge-inspect",
  "bridge-planner",
  "bridge-spec",
  "serde",
- "thiserror 2.0.21",
 ]
 
 [[package]]

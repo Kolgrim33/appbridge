@@ -556,6 +556,12 @@ fn main() -> Result<()> {
                     receipt.target_platform, receipt.target_triple
                 );
                 println!("Command       : {}", receipt.command_line);
+                if let Some(artifact) = &receipt.built_artifact_path {
+                    println!("Built Artifact: {}", artifact.display());
+                }
+                if let Some(sha) = &receipt.artifact_sha256 {
+                    println!("Artifact SHA  : {sha}");
+                }
                 for note in &receipt.notes {
                     println!("Note          : {note}");
                 }

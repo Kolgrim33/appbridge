@@ -278,6 +278,21 @@ impl ConversionEngine {
             hdr.set_cksum();
             builder.append_data(&mut hdr, ".PKGINFO", pkginfo_bytes)?;
 
+            let buildinfo = format!(
+                "format = 2\npkgname = {}\npkgbase = {}\npkgver = {}-1\npkgarch = {}\n",
+                descriptor.name.to_lowercase(),
+                descriptor.name.to_lowercase(),
+                sanitized_ver,
+                arch_str
+            );
+            let buildinfo_bytes = buildinfo.as_bytes();
+            let mut bhdr = Header::new_gnu();
+            bhdr.set_size(buildinfo_bytes.len() as u64);
+            bhdr.set_mode(0o644);
+            bhdr.set_mtime(1_700_000_000);
+            bhdr.set_cksum();
+            builder.append_data(&mut bhdr, ".BUILDINFO", buildinfo_bytes)?;
+
             for rel in &extracted_files {
                 let full = root.join(rel);
                 let data = fs::read(&full)?;
@@ -351,7 +366,7 @@ impl ConversionEngine {
 }
 
 /// Helper to construct a real `ar`-formatted `.deb` archive containing `debian-binary`,
-/// `control.tar.gz` (with `control` and optional `postinst`), and `data.tar.gz` (with a binary payload).
+/// `control.tar.gz` (with `control` and optional `postinst`), and `data.tar.gz` (with a script or ELF payload).
 pub fn create_synthetic_deb_archive(
     output_deb: impl AsRef<Path>,
     pkg_name: &str,
@@ -359,12 +374,33 @@ pub fn create_synthetic_deb_archive(
     depends: &str,
     postinst_script: Option<&str>,
 ) -> io::Result<()> {
+    let default_payload = format!("#!/bin/sh\necho \"Hello from {pkg_name} {version}\"\n");
+    create_synthetic_deb_with_payload(
+        output_deb,
+        pkg_name,
+        version,
+        depends,
+        postinst_script,
+        default_payload.as_bytes(),
+    )
+}
+
+/// Constructs a real `ar`-formatted `.deb` archive with an explicit binary payload (e.g. a compiled x86_64 ELF binary)
+/// placed at `usr/bin/<pkg_name>`.
+pub fn create_synthetic_deb_with_payload(
+    output_deb: impl AsRef<Path>,
+    pkg_name: &str,
+    version: &str,
+    depends: &str,
+    postinst_script: Option<&str>,
+    binary_payload: &[u8],
+) -> io::Result<()> {
     let mut control_tar_gz = Vec::new();
     {
         let gz = GzEncoder::new(&mut control_tar_gz, Compression::default());
         let mut tar = Builder::new(gz);
         let control_content = format!(
-            "Package: {pkg_name}\nVersion: {version}\nArchitecture: amd64\nMaintainer: AppBridge Test <test@appbridge.dev>\nDepends: {depends}\nDescription: Test Debian package for {pkg_name}\n"
+            "Package: {pkg_name}\nVersion: {version}\nSection: x11\nArchitecture: amd64\nMaintainer: AppBridge Test <test@appbridge.dev>\nDepends: {depends}\nDescription: Debian package for {pkg_name}\n"
         );
         let mut hdr = Header::new_gnu();
         hdr.set_size(control_content.len() as u64);
@@ -387,12 +423,11 @@ pub fn create_synthetic_deb_archive(
     {
         let gz = GzEncoder::new(&mut data_tar_gz, Compression::default());
         let mut tar = Builder::new(gz);
-        let payload = format!("#!/bin/sh\necho \"Hello from {pkg_name} {version}\"\n");
         let mut hdr = Header::new_gnu();
-        hdr.set_size(payload.len() as u64);
+        hdr.set_size(binary_payload.len() as u64);
         hdr.set_mode(0o755);
         hdr.set_cksum();
-        tar.append_data(&mut hdr, format!("usr/bin/{pkg_name}"), payload.as_bytes())?;
+        tar.append_data(&mut hdr, format!("usr/bin/{pkg_name}"), binary_payload)?;
         let gz = tar.into_inner()?;
         gz.finish()?;
     }

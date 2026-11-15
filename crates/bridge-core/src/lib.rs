@@ -14,6 +14,7 @@ pub use bridge_bundle::{
 };
 pub use bridge_convert::{
     ConversionEngine, ConversionReceipt, ConvertError, create_synthetic_deb_archive,
+    create_synthetic_deb_with_payload,
 };
 pub use bridge_detect::{BackendReadiness, HostProfile};
 pub use bridge_inspect::{InspectError, InspectionEngine};

@@ -8,5 +8,6 @@ description = "Mode C Source-to-platform cross-compilation and toolchain engine 
 [dependencies]
 bridge-spec.workspace = true
 bridge-detect.workspace = true
+bridge-security.workspace = true
 serde.workspace = true
 thiserror.workspace = true
