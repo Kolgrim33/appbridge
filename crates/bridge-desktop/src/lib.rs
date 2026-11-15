@@ -99,10 +99,10 @@ impl DesktopIntegration {
 
     /// Removes a previously generated desktop launcher if it exists.
     pub fn remove_launcher(&self, launcher_path: Option<&Path>) -> Result<(), DesktopError> {
-        if let Some(p) = launcher_path {
-            if p.exists() {
-                fs::remove_file(p)?;
-            }
+        if let Some(p) = launcher_path
+            && p.exists()
+        {
+            fs::remove_file(p)?;
         }
         Ok(())
     }

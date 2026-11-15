@@ -193,12 +193,12 @@ impl SourceBuildEngine {
         let content = fs::read_to_string(source_dir.join("Cargo.toml")).ok()?;
         for line in content.lines() {
             let trimmed = line.trim();
-            if let Some(rest) = trimmed.strip_prefix("name") {
-                if let Some((_, val)) = rest.split_once('=') {
-                    let clean = val.trim().trim_matches('"').trim_matches('\'');
-                    if !clean.is_empty() {
-                        return Some(clean.to_string());
-                    }
+            if let Some(rest) = trimmed.strip_prefix("name")
+                && let Some((_, val)) = rest.split_once('=')
+            {
+                let clean = val.trim().trim_matches('"').trim_matches('\'');
+                if !clean.is_empty() {
+                    return Some(clean.to_string());
                 }
             }
         }

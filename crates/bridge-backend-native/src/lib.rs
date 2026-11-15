@@ -72,11 +72,75 @@ impl ExecutionBackend for NativeBackend {
                 vec!["install".to_string(), "-y".to_string(), pkg_str],
                 ctx.recipe.execution.executable.clone(),
             ),
-            PackageFormat::ArchPkg => (
-                "pacman".to_string(),
-                vec!["-U".to_string(), "--noconfirm".to_string(), pkg_str],
-                ctx.recipe.execution.executable.clone(),
-            ),
+            PackageFormat::ArchPkg => {
+                let db_dir = install_dir.join("var/lib/pacman");
+                let cache_dir = install_dir.join("var/cache/pacman/pkg");
+                let log_dir = install_dir.join("var/log");
+                let _ = fs::create_dir_all(&db_dir);
+                let _ = fs::create_dir_all(&cache_dir);
+                let _ = fs::create_dir_all(&log_dir);
+                let pacman_conf = install_dir.join("pacman.conf");
+                let _ = fs::write(
+                    &pacman_conf,
+                    "[options]\nArchitecture = auto\nSigLevel = Never\n",
+                );
+
+                let bin_name = Path::new(&ctx.recipe.execution.executable)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&ctx.descriptor.name);
+                let installed_bin = install_dir.join("usr/bin").join(bin_name);
+                let launch_target = if installed_bin.exists() || ctx.host.has_tool("pacman") {
+                    installed_bin.display().to_string()
+                } else {
+                    ctx.recipe.execution.executable.clone()
+                };
+
+                if ctx.host.has_tool("fakeroot") {
+                    (
+                        "fakeroot".to_string(),
+                        vec![
+                            "pacman".to_string(),
+                            "--config".to_string(),
+                            pacman_conf.display().to_string(),
+                            "--root".to_string(),
+                            install_dir.display().to_string(),
+                            "--dbpath".to_string(),
+                            db_dir.display().to_string(),
+                            "--cachedir".to_string(),
+                            cache_dir.display().to_string(),
+                            "--logfile".to_string(),
+                            log_dir.join("pacman.log").display().to_string(),
+                            "-U".to_string(),
+                            "--noconfirm".to_string(),
+                            "-dd".to_string(),
+                            pkg_str,
+                        ],
+                        launch_target,
+                    )
+                } else {
+                    (
+                        "pacman".to_string(),
+                        vec![
+                            "--config".to_string(),
+                            pacman_conf.display().to_string(),
+                            "--root".to_string(),
+                            install_dir.display().to_string(),
+                            "--dbpath".to_string(),
+                            db_dir.display().to_string(),
+                            "--cachedir".to_string(),
+                            cache_dir.display().to_string(),
+                            "--logfile".to_string(),
+                            log_dir.join("pacman.log").display().to_string(),
+                            "-U".to_string(),
+                            "--noconfirm".to_string(),
+                            "-dd".to_string(),
+                            pkg_str,
+                        ],
+                        launch_target,
+                    )
+                }
+            }
             PackageFormat::Rpm => (
                 "dnf".to_string(),
                 vec!["install".to_string(), "-y".to_string(), pkg_str],

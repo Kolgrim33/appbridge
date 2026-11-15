@@ -114,10 +114,9 @@ impl InspectionEngine {
             PackageFormat::Unknown => {
                 if let Ok(desc) =
                     self.inspect_binary(path, PackageFormat::Unknown, sha256.clone(), size_bytes)
+                    && desc.format != PackageFormat::Unknown
                 {
-                    if desc.format != PackageFormat::Unknown {
-                        return Ok(desc);
-                    }
+                    return Ok(desc);
                 }
                 Ok(Self::fallback_descriptor(
                     path,
@@ -281,12 +280,11 @@ impl InspectionEngine {
             }
         }
 
-        if control_text.is_empty() {
-            if let Ok(raw_text) = fs::read_to_string(path) {
-                if raw_text.contains("Package:") {
-                    control_text = raw_text;
-                }
-            }
+        if control_text.is_empty()
+            && let Ok(raw_text) = fs::read_to_string(path)
+            && raw_text.contains("Package:")
+        {
+            control_text = raw_text;
         }
 
         if !control_text.is_empty() {
@@ -476,7 +474,18 @@ impl InspectionEngine {
         );
         desc.source_distro = Some(LinuxDistro::Arch);
 
-        if let Ok(content) = fs::read_to_string(path) {
+        let pkginfo_text = if let Ok(content) = fs::read_to_string(path) {
+            Some(content)
+        } else {
+            std::process::Command::new("tar")
+                .args(["-xOf", &path.display().to_string(), ".PKGINFO"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        };
+
+        if let Some(content) = pkginfo_text {
             for line in content.lines() {
                 if let Some((k, v)) = line.split_once('=') {
                     let k = k.trim();
@@ -648,27 +657,26 @@ impl InspectionEngine {
         );
         desc.is_gui = true;
 
-        if let Ok(file) = File::open(path) {
-            if let Ok(mut zip) = zip::ZipArchive::new(file) {
-                if let Ok(mut manifest) = zip.by_name("AppxManifest.xml") {
-                    let mut xml = String::new();
-                    if manifest.read_to_string(&mut xml).is_ok() {
-                        if let Some(arch) = extract_xml_attr(&xml, "ProcessorArchitecture") {
-                            desc.arch = match arch.as_str() {
-                                "x64" => CpuArch::X86_64,
-                                "x86" => CpuArch::X86,
-                                "arm64" => CpuArch::Aarch64,
-                                "neutral" => CpuArch::Any,
-                                _ => CpuArch::X86_64,
-                            };
-                        }
-                        if let Some(ver) = extract_xml_attr(&xml, "Version") {
-                            desc.version = ver;
-                        }
-                        if let Some(exe) = extract_xml_attr(&xml, "Executable") {
-                            desc.entrypoint = Some(exe);
-                        }
-                    }
+        if let Ok(file) = File::open(path)
+            && let Ok(mut zip) = zip::ZipArchive::new(file)
+            && let Ok(mut manifest) = zip.by_name("AppxManifest.xml")
+        {
+            let mut xml = String::new();
+            if manifest.read_to_string(&mut xml).is_ok() {
+                if let Some(arch) = extract_xml_attr(&xml, "ProcessorArchitecture") {
+                    desc.arch = match arch.as_str() {
+                        "x64" => CpuArch::X86_64,
+                        "x86" => CpuArch::X86,
+                        "arm64" => CpuArch::Aarch64,
+                        "neutral" => CpuArch::Any,
+                        _ => CpuArch::X86_64,
+                    };
+                }
+                if let Some(ver) = extract_xml_attr(&xml, "Version") {
+                    desc.version = ver;
+                }
+                if let Some(exe) = extract_xml_attr(&xml, "Executable") {
+                    desc.entrypoint = Some(exe);
                 }
             }
         }
@@ -835,27 +843,27 @@ impl InspectionEngine {
                 if entry_path.trim_start_matches("./") == "manifest.toml" {
                     let mut manifest_str = String::new();
                     let mut r = entry;
-                    if r.read_to_string(&mut manifest_str).is_ok() {
-                        if let Ok(val) = manifest_str.parse::<toml::Table>() {
-                            if let Some(app_id) = val.get("app_id").and_then(|v| v.as_str()) {
-                                desc.app_id = app_id.to_string();
-                            }
-                            if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
-                                desc.name = name.to_string();
-                            }
-                            if let Some(ver) = val.get("version").and_then(|v| v.as_str()) {
-                                desc.version = ver.to_string();
-                            }
-                            if let Some(exe) = val.get("entrypoint").and_then(|v| v.as_str()) {
-                                desc.entrypoint = Some(exe.to_string());
-                            }
-                            if let Some(os) = val.get("source_os").and_then(|v| v.as_str()) {
-                                desc.source_os = match os.to_lowercase().as_str() {
-                                    "windows" => OsFamily::Windows,
-                                    "macos" => OsFamily::MacOs,
-                                    _ => OsFamily::Linux,
-                                };
-                            }
+                    if r.read_to_string(&mut manifest_str).is_ok()
+                        && let Ok(val) = manifest_str.parse::<toml::Table>()
+                    {
+                        if let Some(app_id) = val.get("app_id").and_then(|v| v.as_str()) {
+                            desc.app_id = app_id.to_string();
+                        }
+                        if let Some(name) = val.get("name").and_then(|v| v.as_str()) {
+                            desc.name = name.to_string();
+                        }
+                        if let Some(ver) = val.get("version").and_then(|v| v.as_str()) {
+                            desc.version = ver.to_string();
+                        }
+                        if let Some(exe) = val.get("entrypoint").and_then(|v| v.as_str()) {
+                            desc.entrypoint = Some(exe.to_string());
+                        }
+                        if let Some(os) = val.get("source_os").and_then(|v| v.as_str()) {
+                            desc.source_os = match os.to_lowercase().as_str() {
+                                "windows" => OsFamily::Windows,
+                                "macos" => OsFamily::MacOs,
+                                _ => OsFamily::Linux,
+                            };
                         }
                     }
                 }

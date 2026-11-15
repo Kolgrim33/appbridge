@@ -141,10 +141,10 @@ impl AppBridgeEngine {
     }
 
     pub fn default_data_root() -> PathBuf {
-        if let Ok(custom) = std::env::var("APPBRIDGE_HOME") {
-            if !custom.trim().is_empty() {
-                return PathBuf::from(custom);
-            }
+        if let Ok(custom) = std::env::var("APPBRIDGE_HOME")
+            && !custom.trim().is_empty()
+        {
+            return PathBuf::from(custom);
         }
         dirs::data_local_dir()
             .unwrap_or_else(|| PathBuf::from("."))

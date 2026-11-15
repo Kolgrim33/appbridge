@@ -132,16 +132,15 @@ impl DependencyResolver {
             OsFamily::MacOs => {
                 can_satisfy_natively = host.os == OsFamily::MacOs;
                 for dylib in &descriptor.shared_libraries {
-                    if dylib.contains("Metal.framework")
+                    if (dylib.contains("Metal.framework")
                         || dylib.contains("AppKit.framework")
-                        || dylib.contains("SwiftUI.framework")
+                        || dylib.contains("SwiftUI.framework"))
+                        && host.os != OsFamily::MacOs
                     {
-                        if host.os != OsFamily::MacOs {
-                            unsupported_libraries.push(dylib.clone());
-                            resolution_notes.push(format!(
+                        unsupported_libraries.push(dylib.clone());
+                        resolution_notes.push(format!(
                                 "macOS GUI/GPU framework '{dylib}' is not supported by experimental Linux translation layers (Darling)."
                             ));
-                        }
                     }
                 }
             }

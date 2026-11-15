@@ -1,0 +1,156 @@
+name: AppBridge 0.1.0 CI & Engineering Validation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # 1. Core Formatting, Static Analysis, and Workspace Unit/Integration Suite
+  lint-and-test:
+    name: Rust Format, Clippy & Workspace Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies (zstd, clang, lld)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd clang lld gcc
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Swatinem Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify formatting (cargo fmt)
+        run: cargo fmt --all -- --check
+
+      - name: Run static analysis (cargo clippy)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run full workspace test suite
+        run: cargo test --workspace -- --nocapture
+
+      - name: Build SDK example
+        run: cargo run -p bridge-core --example embed_sdk
+
+  # 2. Deliverable 1: Real Arch Linux Container `pacman -U` Installation Verification
+  arch-pacman-conversion-e2e:
+    name: Arch Linux Container (DEB -> .pkg.tar.zst -> pacman -U)
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Update Arch keyring & install Rust + gcc + zstd
+        run: |
+          pacman -Sy --noconfirm archlinux-keyring
+          pacman -Syu --noconfirm base-devel rust zstd git
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build appbridge CLI
+        run: cargo build --bin appbridge
+
+      - name: Compile ELF binary, package as Ubuntu .deb, convert to Arch .pkg.tar.zst, and install with pacman -U
+        run: |
+          mkdir -p /tmp/arch-e2e
+          cat << 'EOF' > /tmp/arch-e2e/fastnote.c
+          #include <stdio.h>
+          int main(void) {
+              printf("ARCH_PACMAN_CONTAINER_INSTALLED_OK\n");
+              return 0;
+          }
+          EOF
+          gcc -O2 /tmp/arch-e2e/fastnote.c -o /tmp/arch-e2e/fastnote
+
+          # Run Deliverable 1 integration test which converts DEB -> .pkg.tar.zst and verifies with pacman
+          cargo test -p bridge-core --test dual_engine_integration test_1_package_conversion_arch_pacman_and_execution -- --nocapture
+
+          # Also generate a standalone .pkg.tar.zst and install system-wide as root with `pacman -U --noconfirm`
+          cargo run -p bridge-core --example embed_sdk -- --emit-arch-pkg /tmp/arch-e2e/sdk-demo.pkg.tar.zst
+          pacman -Qip /tmp/arch-e2e/sdk-demo.pkg.tar.zst
+          pacman -Qlp /tmp/arch-e2e/sdk-demo.pkg.tar.zst
+          pacman -U --noconfirm /tmp/arch-e2e/sdk-demo.pkg.tar.zst
+          pacman -Qi appbridge-sdk-demo
+          /usr/bin/appbridge-sdk-demo
+
+  # 3. Deliverable 3 (Part A): Produce .appbridge Bundle on Runner VM #1
+  bundle-producer-vm:
+    name: Bundle Producer (VM Runner A)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Swatinem Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build appbridge CLI and create portable .appbridge bundle
+        run: |
+          cargo build --release --bin appbridge
+          mkdir -p /tmp/producer-out
+          gcc -O2 -x c - -o /tmp/producer-out/portable-hello << 'EOF'
+          #include <stdio.h>
+          int main(void) {
+              printf("CROSS_VM_RUNNER_BUNDLE_PORTABILITY_OK\n");
+              return 0;
+          }
+          EOF
+          chmod +x /tmp/producer-out/portable-hello
+          ./target/release/appbridge convert /tmp/producer-out/portable-hello \
+            --to appbridge \
+            --target linux \
+            --backend native \
+            --output /tmp/producer-out/portable-hello.appbridge
+          ./target/release/appbridge verify-bundle /tmp/producer-out/portable-hello.appbridge
+
+      - name: Upload .appbridge bundle artifact for separate VM runner
+        uses: actions/upload-artifact@v4
+        with:
+          name: portable-appbridge-bundle
+          path: /tmp/producer-out/portable-hello.appbridge
+          retention-days: 5
+
+  # 4. Deliverable 3 (Part B): Verify, Install & Execute .appbridge Bundle on Separate Clean Runner VM #2
+  bundle-consumer-vm:
+    name: Bundle Consumer (Separate VM Runner B)
+    needs: bundle-producer-vm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Swatinem Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Download .appbridge bundle from Producer VM
+        uses: actions/download-artifact@v4
+        with:
+          name: portable-appbridge-bundle
+          path: /tmp/consumer-in
+
+      - name: Verify, install, and execute .appbridge bundle on clean VM
+        run: |
+          cargo build --release --bin appbridge
+          ./target/release/appbridge verify-bundle /tmp/consumer-in/portable-hello.appbridge
+          ./target/release/appbridge inspect /tmp/consumer-in/portable-hello.appbridge
+          ./target/release/appbridge run /tmp/consumer-in/portable-hello.appbridge
+          ./target/release/appbridge list

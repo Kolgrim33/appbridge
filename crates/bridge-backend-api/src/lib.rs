@@ -99,6 +99,7 @@ pub trait ExecutionBackend: Send + Sync {
     fn install(&self, ctx: &InstallContext) -> Result<InstallReceipt, BackendError>;
 
     /// Launch an installed application in its managed environment.
+    #[allow(clippy::too_many_arguments)]
     fn launch(
         &self,
         app_id: &str,
@@ -151,6 +152,33 @@ pub fn run_or_simulate_with_env(
     host: &HostProfile,
     mode: ExecutionMode,
 ) -> Result<(String, bool), BackendError> {
+    if program.trim().is_empty()
+        || program.contains('\0')
+        || program.contains('\n')
+        || program.contains('\r')
+    {
+        return Err(BackendError::CommandFailed {
+            command: program.to_string(),
+            reason: "Executable program name is empty or contains control characters".to_string(),
+        });
+    }
+    for (idx, a) in args.iter().enumerate() {
+        if a.contains('\0') {
+            return Err(BackendError::CommandFailed {
+                command: program.to_string(),
+                reason: format!("Argument at index {idx} contains null byte"),
+            });
+        }
+    }
+    for (k, v) in envs {
+        if k.is_empty() || k.contains('\0') || v.contains('\0') {
+            return Err(BackendError::CommandFailed {
+                command: program.to_string(),
+                reason: format!("Environment variable '{k}' contains null byte or empty key"),
+            });
+        }
+    }
+
     let env_prefix = if envs.is_empty() {
         String::new()
     } else {

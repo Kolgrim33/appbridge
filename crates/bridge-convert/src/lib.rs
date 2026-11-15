@@ -17,11 +17,12 @@ use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tar::{Archive, Builder, Header};
+use tar::{Archive, Builder, EntryType, Header};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -206,18 +207,65 @@ impl ConversionEngine {
                 };
 
                 let mut data_tar = Archive::new(reader);
+                let mut total_bytes: u64 = 0;
+                let mut entry_count: usize = 0;
                 for item_res in data_tar.entries()? {
                     let mut item = item_res?;
+                    entry_count += 1;
+                    if entry_count > bridge_security::DEFAULT_MAX_ARCHIVE_ENTRIES {
+                        return Err(ConvertError::Security(
+                            SecurityError::ArchiveEntryCountExceeded {
+                                count: entry_count,
+                                max_entries: bridge_security::DEFAULT_MAX_ARCHIVE_ENTRIES,
+                            },
+                        ));
+                    }
                     let rel_path = item.path()?.to_path_buf();
                     let safe_dest = SecurityEngine::sanitize_archive_path(root, &rel_path)?;
-                    if item.header().entry_type().is_dir() {
+                    let entry_type = item.header().entry_type();
+
+                    if entry_type.is_symlink() || entry_type.is_hard_link() {
+                        if let Ok(Some(link_target)) = item.link_name() {
+                            SecurityEngine::validate_archive_link_target(
+                                root,
+                                &rel_path,
+                                &link_target,
+                            )?;
+                        } else {
+                            return Err(ConvertError::Security(SecurityError::SymlinkEscape {
+                                entry: rel_path.display().to_string(),
+                                target: "<missing>".to_string(),
+                            }));
+                        }
+                    } else if entry_type.is_block_special()
+                        || entry_type.is_character_special()
+                        || entry_type.is_fifo()
+                    {
+                        return Err(ConvertError::Security(
+                            SecurityError::UnsafeArchiveEntryType {
+                                entry: rel_path.display().to_string(),
+                                entry_type: format!("{entry_type:?}"),
+                            },
+                        ));
+                    }
+
+                    if entry_type.is_dir() {
                         fs::create_dir_all(&safe_dest)?;
-                    } else if item.header().entry_type().is_file() {
+                    } else if entry_type.is_file() {
                         if let Some(p) = safe_dest.parent() {
                             fs::create_dir_all(p)?;
                         }
                         let mut out_f = File::create(&safe_dest)?;
-                        io::copy(&mut item, &mut out_f)?;
+                        let copied = io::copy(&mut item, &mut out_f)?;
+                        total_bytes = total_bytes.saturating_add(copied);
+                        if total_bytes > bridge_security::DEFAULT_MAX_ARCHIVE_EXTRACT_BYTES {
+                            return Err(ConvertError::Security(
+                                SecurityError::ArchiveQuotaExceeded {
+                                    actual_bytes: total_bytes,
+                                    max_bytes: bridge_security::DEFAULT_MAX_ARCHIVE_EXTRACT_BYTES,
+                                },
+                            ));
+                        }
                         if let Ok(rel) = safe_dest.strip_prefix(root) {
                             extracted_files.push(rel.to_path_buf());
                         }
@@ -259,10 +307,10 @@ impl ConversionEngine {
             pkginfo.push_str(&format!("depend = {dep}\n"));
         }
 
-        if let Some(parent) = output_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = output_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)?;
         }
 
         let uncompressed_tar_path = root.join("package.pkg.tar");
@@ -293,6 +341,30 @@ impl ConversionEngine {
             bhdr.set_cksum();
             builder.append_data(&mut bhdr, ".BUILDINFO", buildinfo_bytes)?;
 
+            let mut parent_dirs = BTreeSet::new();
+            for rel in &extracted_files {
+                let mut cur = PathBuf::new();
+                if let Some(parent) = rel.parent() {
+                    for comp in parent.components() {
+                        cur.push(comp);
+                        parent_dirs.insert(cur.clone());
+                    }
+                }
+            }
+            for dir_rel in &parent_dirs {
+                let mut d_hdr = Header::new_gnu();
+                d_hdr.set_entry_type(EntryType::Directory);
+                d_hdr.set_size(0);
+                d_hdr.set_mode(0o755);
+                d_hdr.set_mtime(1_700_000_000);
+                d_hdr.set_cksum();
+                let mut dir_str = dir_rel.display().to_string();
+                if !dir_str.ends_with('/') {
+                    dir_str.push('/');
+                }
+                builder.append_data(&mut d_hdr, &dir_str, &[][..])?;
+            }
+
             for rel in &extracted_files {
                 let full = root.join(rel);
                 let data = fs::read(&full)?;
@@ -318,10 +390,10 @@ impl ConversionEngine {
                     &out_str,
                 ])
                 .status();
-            if let Ok(s) = status {
-                if s.success() {
-                    return Ok(());
-                }
+            if let Ok(s) = status
+                && s.success()
+            {
+                return Ok(());
             }
         }
 
@@ -339,10 +411,10 @@ impl ConversionEngine {
         descriptor: &ApplicationDescriptor,
         output_path: &Path,
     ) -> Result<(), ConvertError> {
-        if let Some(parent) = output_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = output_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)?;
         }
         let out_file = File::create(output_path)?;
         let gz = GzEncoder::new(out_file, Compression::default());

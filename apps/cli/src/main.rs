@@ -423,25 +423,25 @@ fn main() -> Result<()> {
                 println!("  VM             : {}", plan.analysis.vm);
                 println!("  Darling        : {}", plan.analysis.darling);
 
-                if let Ok(verified) = active_engine.list_compatibility(Some(&plan.app_id)) {
-                    if !verified.is_empty() {
-                        println!("\n--- Verified Compatibility Registry Evidence ---");
-                        for v in verified {
-                            println!(
-                                "  * [{}] {} v{} on {}{} via {} ({}) -> {}",
-                                v.status,
-                                v.app_id,
-                                v.app_version,
-                                v.host_os,
-                                v.host_distro
-                                    .as_ref()
-                                    .map(|d| format!(" [{d}]"))
-                                    .unwrap_or_default(),
-                                v.backend,
-                                v.backend_version,
-                                v.evidence
-                            );
-                        }
+                if let Ok(verified) = active_engine.list_compatibility(Some(&plan.app_id))
+                    && !verified.is_empty()
+                {
+                    println!("\n--- Verified Compatibility Registry Evidence ---");
+                    for v in verified {
+                        println!(
+                            "  * [{}] {} v{} on {}{} via {} ({}) -> {}",
+                            v.status,
+                            v.app_id,
+                            v.app_version,
+                            v.host_os,
+                            v.host_distro
+                                .as_ref()
+                                .map(|d| format!(" [{d}]"))
+                                .unwrap_or_default(),
+                            v.backend,
+                            v.backend_version,
+                            v.evidence
+                        );
                     }
                 }
 
@@ -815,8 +815,8 @@ fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&entries)?);
             } else {
                 println!(
-                    "{:<28} {:<8} {:<18} {:<10} {:<10} {}",
-                    "APPLICATION", "VERSION", "HOST", "BACKEND", "RESULT", "EVIDENCE"
+                    "{:<28} {:<8} {:<18} {:<10} {:<10} EVIDENCE",
+                    "APPLICATION", "VERSION", "HOST", "BACKEND", "RESULT"
                 );
                 println!("{}", "-".repeat(110));
                 for e in entries {

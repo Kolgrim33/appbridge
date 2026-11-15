@@ -119,10 +119,10 @@ impl BundleManager {
         output_path: impl AsRef<Path>,
     ) -> Result<BundleManifest, BundleError> {
         let output_path = output_path.as_ref();
-        if let Some(parent) = output_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = output_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)?;
         }
 
         let deployment_kind = match backend {
@@ -244,8 +244,21 @@ impl BundleManager {
             .map_err(|e| BundleError::CorruptedBundle(e.to_string()))?;
 
         let dummy_root = Path::new("/tmp/appbridge-verify");
+        let mut total_bytes: u64 = 0;
+        let mut entry_count: usize = 0;
+
         for entry_res in entries {
             let mut entry = entry_res.map_err(|e| BundleError::CorruptedBundle(e.to_string()))?;
+            entry_count += 1;
+            if entry_count > bridge_security::DEFAULT_MAX_ARCHIVE_ENTRIES {
+                return Err(BundleError::Security(
+                    SecurityError::ArchiveEntryCountExceeded {
+                        count: entry_count,
+                        max_entries: bridge_security::DEFAULT_MAX_ARCHIVE_ENTRIES,
+                    },
+                ));
+            }
+
             let raw_path = entry
                 .path()
                 .map_err(|e| BundleError::CorruptedBundle(e.to_string()))?
@@ -253,6 +266,32 @@ impl BundleManager {
 
             // Enforce strict path traversal protection on every archive entry
             SecurityEngine::sanitize_archive_path(dummy_root, &raw_path)?;
+
+            let entry_type = entry.header().entry_type();
+            if entry_type.is_symlink() || entry_type.is_hard_link() {
+                if let Ok(Some(link_target)) = entry.link_name() {
+                    SecurityEngine::validate_archive_link_target(
+                        dummy_root,
+                        &raw_path,
+                        &link_target,
+                    )?;
+                } else {
+                    return Err(BundleError::Security(SecurityError::SymlinkEscape {
+                        entry: raw_path.display().to_string(),
+                        target: "<missing>".to_string(),
+                    }));
+                }
+            } else if entry_type.is_block_special()
+                || entry_type.is_character_special()
+                || entry_type.is_fifo()
+            {
+                return Err(BundleError::Security(
+                    SecurityError::UnsafeArchiveEntryType {
+                        entry: raw_path.display().to_string(),
+                        entry_type: format!("{entry_type:?}"),
+                    },
+                ));
+            }
 
             let rel_str = raw_path
                 .display()
@@ -264,6 +303,14 @@ impl BundleManager {
             entry
                 .read_to_end(&mut buf)
                 .map_err(|e| BundleError::CorruptedBundle(e.to_string()))?;
+
+            total_bytes = total_bytes.saturating_add(buf.len() as u64);
+            if total_bytes > bridge_security::DEFAULT_MAX_ARCHIVE_EXTRACT_BYTES {
+                return Err(BundleError::Security(SecurityError::ArchiveQuotaExceeded {
+                    actual_bytes: total_bytes,
+                    max_bytes: bridge_security::DEFAULT_MAX_ARCHIVE_EXTRACT_BYTES,
+                }));
+            }
 
             if rel_str == "manifest.toml" {
                 let s = String::from_utf8(buf.clone())
@@ -277,7 +324,7 @@ impl BundleManager {
                 let _ = BridgeRecipe::from_toml_str(&s)?;
             }
 
-            if rel_str != "metadata/checksums.json" {
+            if rel_str != "metadata/checksums.json" && entry_type.is_file() {
                 actual_hashes.insert(rel_str, sha256_bytes(&buf));
             }
         }
@@ -296,6 +343,16 @@ impl BundleManager {
             )));
         }
 
+        // Reject any unlisted files injected into the archive that are not declared in checksums.json
+        for actual_file in actual_hashes.keys() {
+            if !checksums.files.contains_key(actual_file) {
+                return Err(BundleError::Security(SecurityError::ChecksumMismatch {
+                    expected: "<no unlisted archive entries>".to_string(),
+                    actual: format!("unlisted archive entry '{actual_file}'"),
+                }));
+            }
+        }
+
         let mut verified_files = Vec::new();
         for (expected_file, expected_hash) in &checksums.files {
             let actual = actual_hashes.get(expected_file).ok_or_else(|| {
@@ -304,9 +361,10 @@ impl BundleManager {
                 ))
             })?;
             if actual != expected_hash {
-                return Err(BundleError::CorruptedBundle(format!(
-                    "SHA-256 mismatch for '{expected_file}': expected {expected_hash}, got {actual}"
-                )));
+                return Err(BundleError::Security(SecurityError::ChecksumMismatch {
+                    expected: expected_hash.clone(),
+                    actual: actual.clone(),
+                }));
             }
             verified_files.push(expected_file.clone());
         }
@@ -340,8 +398,28 @@ impl BundleManager {
             if let Some(parent) = safe_target.parent() {
                 fs::create_dir_all(parent)?;
             }
+            let raw_mode = entry.header().mode().unwrap_or(0o644);
             let mut out = File::create(&safe_target)?;
             io::copy(&mut entry, &mut out)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let rel_str = raw_path
+                    .display()
+                    .to_string()
+                    .trim_start_matches("./")
+                    .to_string();
+                let safe_mode = if rel_str == report.manifest.payload_relative_path {
+                    0o755
+                } else {
+                    SecurityEngine::sanitize_file_mode(raw_mode)
+                };
+                if let Ok(meta) = fs::metadata(&safe_target) {
+                    let mut perms = meta.permissions();
+                    perms.set_mode(safe_mode);
+                    let _ = fs::set_permissions(&safe_target, perms);
+                }
+            }
         }
 
         let payload_path = dest.join(&report.manifest.payload_relative_path);

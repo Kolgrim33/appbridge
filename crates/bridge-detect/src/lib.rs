@@ -65,6 +65,12 @@ impl HostProfile {
             "cargo",
             "cmake",
             "make",
+            "fakeroot",
+            "zstd",
+            "tar",
+            "gcc",
+            "clang",
+            "chmod",
         ];
 
         let mut available_tools = BTreeMap::new();
@@ -311,15 +317,15 @@ impl HostProfile {
     fn detect_display(os: OsFamily) -> (bool, Option<String>) {
         match os {
             OsFamily::Linux => {
-                if let Ok(wayland) = env::var("WAYLAND_DISPLAY") {
-                    if !wayland.is_empty() {
-                        return (true, Some("Wayland".to_string()));
-                    }
+                if let Ok(wayland) = env::var("WAYLAND_DISPLAY")
+                    && !wayland.is_empty()
+                {
+                    return (true, Some("Wayland".to_string()));
                 }
-                if let Ok(x11) = env::var("DISPLAY") {
-                    if !x11.is_empty() {
-                        return (true, Some("X11".to_string()));
-                    }
+                if let Ok(x11) = env::var("DISPLAY")
+                    && !x11.is_empty()
+                {
+                    return (true, Some("X11".to_string()));
                 }
                 (false, None)
             }

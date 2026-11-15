@@ -293,34 +293,32 @@ impl CompatibilityPlanner {
         // dynamically select the best artifact for the destination host OS & distro!
         let mut adapted = raw_descriptor.clone();
         let mut multi_artifact_note = None;
-        if let Some(raw_toml) = raw_descriptor.extra_metadata.get("raw_recipe_toml") {
-            if let Ok(recipe) = BridgeRecipe::from_toml_str(raw_toml) {
-                if let Some(best_art) =
-                    recipe.select_artifact_for_host(host.os, host.distro.as_ref(), host.arch)
-                {
-                    adapted.source_os = best_art.os;
-                    adapted.source_distro = best_art.distro.clone();
-                    adapted.format = best_art.format;
-                    adapted.arch = best_art.arch;
-                    adapted.entrypoint = Some(best_art.executable.clone());
-                    multi_artifact_note = Some(format!(
-                        "Unified Bridge Recipe defines {} platform artifacts ({}); automatically selected '{}' ({}) for target host {} ({}).",
-                        recipe.artifacts.len(),
-                        raw_descriptor
-                            .extra_metadata
-                            .get("multi_artifacts")
-                            .cloned()
-                            .unwrap_or_default(),
-                        best_art.package_path,
-                        best_art.format,
-                        host.os,
-                        host.distro
-                            .as_ref()
-                            .map(|d| d.to_string())
-                            .unwrap_or_else(|| "native".to_string())
-                    ));
-                }
-            }
+        if let Some(raw_toml) = raw_descriptor.extra_metadata.get("raw_recipe_toml")
+            && let Ok(recipe) = BridgeRecipe::from_toml_str(raw_toml)
+            && let Some(best_art) =
+                recipe.select_artifact_for_host(host.os, host.distro.as_ref(), host.arch)
+        {
+            adapted.source_os = best_art.os;
+            adapted.source_distro = best_art.distro.clone();
+            adapted.format = best_art.format;
+            adapted.arch = best_art.arch;
+            adapted.entrypoint = Some(best_art.executable.clone());
+            multi_artifact_note = Some(format!(
+                "Unified Bridge Recipe defines {} platform artifacts ({}); automatically selected '{}' ({}) for target host {} ({}).",
+                recipe.artifacts.len(),
+                raw_descriptor
+                    .extra_metadata
+                    .get("multi_artifacts")
+                    .cloned()
+                    .unwrap_or_default(),
+                best_art.package_path,
+                best_art.format,
+                host.os,
+                host.distro
+                    .as_ref()
+                    .map(|d| d.to_string())
+                    .unwrap_or_else(|| "native".to_string())
+            ));
         }
         let descriptor = &adapted;
 
@@ -637,7 +635,7 @@ impl CompatibilityPlanner {
         }
 
         // Sort candidates by score descending
-        candidates.sort_by(|a, b| b.score.cmp(&a.score));
+        candidates.sort_by_key(|a| std::cmp::Reverse(a.score));
 
         let (
             primary_status,

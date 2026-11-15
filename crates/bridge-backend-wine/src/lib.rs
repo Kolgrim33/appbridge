@@ -88,13 +88,22 @@ impl ExecutionBackend for WineBackend {
             any_simulated |= sim_wt;
         }
 
-        // 3. Stage the Windows binary or run MSI installer inside the isolated prefix
+        // 3. Stage the Windows binary (and any co-located companion .dll libraries it imports)
+        // or run MSI installer inside the isolated prefix
         let pkg_file_name = ctx.descriptor.package_path.file_name().unwrap_or_default();
         let staged_target = drive_c_app.join(pkg_file_name);
         if ctx.descriptor.package_path.is_file()
             && ctx.descriptor.format != PackageFormat::BridgeRecipe
         {
             let _ = fs::copy(&ctx.descriptor.package_path, &staged_target);
+            if let Some(src_dir) = ctx.descriptor.package_path.parent() {
+                for dll in &ctx.descriptor.shared_libraries {
+                    let candidate_dll = src_dir.join(dll);
+                    if candidate_dll.is_file() {
+                        let _ = fs::copy(&candidate_dll, drive_c_app.join(dll));
+                    }
+                }
+            }
         }
 
         if ctx.descriptor.format == PackageFormat::Msi {
