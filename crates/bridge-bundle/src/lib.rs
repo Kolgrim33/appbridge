@@ -588,7 +588,7 @@ impl BundleManager {
         let mut entry_count: usize = 0;
 
         for entry_res in entries {
-            let mut entry = entry_res.map_err(|e| BundleError::CorruptedBundle(e.to_string()))?;
+            let entry = entry_res.map_err(|e| BundleError::CorruptedBundle(e.to_string()))?;
             entry_count += 1;
             if entry_count > bridge_security::DEFAULT_MAX_ARCHIVE_ENTRIES {
                 return Err(BundleError::Security(
@@ -638,8 +638,20 @@ impl BundleManager {
                 .trim_start_matches("./")
                 .to_string();
 
+            let remaining =
+                bridge_security::DEFAULT_MAX_ARCHIVE_EXTRACT_BYTES.saturating_sub(total_bytes);
+            if let Ok(declared_size) = entry.header().size()
+                && declared_size > remaining
+            {
+                return Err(BundleError::Security(SecurityError::ArchiveQuotaExceeded {
+                    actual_bytes: total_bytes.saturating_add(declared_size),
+                    max_bytes: bridge_security::DEFAULT_MAX_ARCHIVE_EXTRACT_BYTES,
+                }));
+            }
+
             let mut buf = Vec::new();
             entry
+                .take(remaining.saturating_add(1))
                 .read_to_end(&mut buf)
                 .map_err(|e| BundleError::CorruptedBundle(e.to_string()))?;
 
@@ -756,6 +768,10 @@ impl BundleManager {
             let mut entry = entry_res?;
             let raw_path = entry.path()?.to_path_buf();
             let safe_target = SecurityEngine::sanitize_archive_path(dest, &raw_path)?;
+            if entry.header().entry_type().is_dir() {
+                fs::create_dir_all(&safe_target)?;
+                continue;
+            }
             if let Some(parent) = safe_target.parent() {
                 fs::create_dir_all(parent)?;
             }
@@ -783,7 +799,10 @@ impl BundleManager {
             }
         }
 
-        let payload_path = dest.join(&report.manifest.payload_relative_path);
+        let payload_path = SecurityEngine::sanitize_archive_path(
+            dest,
+            Path::new(&report.manifest.payload_relative_path),
+        )?;
         Ok((report.manifest, payload_path))
     }
 }

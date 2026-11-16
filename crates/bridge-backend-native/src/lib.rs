@@ -29,7 +29,8 @@ impl ExecutionBackend for NativeBackend {
     }
 
     fn install(&self, ctx: &InstallContext) -> Result<InstallReceipt, BackendError> {
-        let env_id = format!("native-{}", ctx.descriptor.app_id);
+        let safe_app_id = ctx.descriptor.app_id.replace(['/', '\\'], "-").replace("..", "-");
+        let env_id = format!("native-{safe_app_id}");
         let install_dir = ctx.data_root.join("environments").join(&env_id);
         fs::create_dir_all(&install_dir).map_err(|source| BackendError::Io {
             backend: BackendId::Native,
@@ -41,7 +42,12 @@ impl ExecutionBackend for NativeBackend {
             PackageFormat::AppImage | PackageFormat::ElfBinary => {
                 let target_bin =
                     install_dir.join(ctx.descriptor.package_path.file_name().unwrap_or_default());
-                let _ = fs::copy(&ctx.descriptor.package_path, &target_bin);
+                fs::copy(&ctx.descriptor.package_path, &target_bin).map_err(|source| {
+                    BackendError::Io {
+                        backend: BackendId::Native,
+                        source,
+                    }
+                })?;
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;

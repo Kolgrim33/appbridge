@@ -395,7 +395,8 @@ impl StateRegistry {
         let record = self.get_app(app_id)?;
         let recipe_toml = self.get_recipe_toml(app_id)?;
         let now = Utc::now();
-        let snapshot_id = format!("{}-{}", app_id, now.format("%Y%m%d%H%M%S"));
+        let safe_app_id = app_id.replace(['/', '\\'], "-").replace("..", "-");
+        let snapshot_id = format!("{}-{}", safe_app_id, now.format("%Y%m%d%H%M%S"));
 
         let snapshot = EnvironmentBackupSnapshot {
             snapshot_id: snapshot_id.clone(),
@@ -473,7 +474,8 @@ impl StateRegistry {
             "SELECT id, timestamp, action, app_id, backend, details
              FROM audit_log ORDER BY id DESC LIMIT ?1",
         )?;
-        let rows = stmt.query_map(params![limit as i64], |row| {
+        let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
+        let rows = stmt.query_map(params![limit_i64], |row| {
             Ok(AuditLogEntry {
                 id: row.get(0)?,
                 timestamp: row.get(1)?,

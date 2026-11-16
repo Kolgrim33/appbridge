@@ -90,12 +90,12 @@ impl ExecutionBackend for DistroboxBackend {
         executed_commands.push(c1);
         any_simulated |= sim1;
 
-        // 2. Install the package inside the container
+        // 2. Install the package inside the container (pass pkg_path as $1 to avoid shell injection)
         let pkg_path = ctx.descriptor.package_path.display().to_string();
-        let pkg_install_cmd = match ctx.descriptor.format {
-            PackageFormat::Rpm => format!("sudo dnf install -y {pkg_path}"),
-            PackageFormat::ArchPkg => format!("sudo pacman -U --noconfirm {pkg_path}"),
-            _ => format!("sudo apt-get update && sudo apt-get install -y {pkg_path}"),
+        let pkg_install_script = match ctx.descriptor.format {
+            PackageFormat::Rpm => "sudo dnf install -y \"$1\"",
+            PackageFormat::ArchPkg => "sudo pacman -U --noconfirm \"$1\"",
+            _ => "sudo apt-get update && sudo apt-get install -y \"$1\"",
         };
 
         let enter_install_args = vec![
@@ -104,7 +104,9 @@ impl ExecutionBackend for DistroboxBackend {
             "--".to_string(),
             "sh".to_string(),
             "-c".to_string(),
-            pkg_install_cmd,
+            pkg_install_script.to_string(),
+            "_".to_string(),
+            pkg_path,
         ];
         let (c2, sim2) = run_or_simulate(
             BackendId::Distrobox,

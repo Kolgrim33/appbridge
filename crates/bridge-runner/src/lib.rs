@@ -173,7 +173,8 @@ impl ExecutionLifecycleManager {
         SecurityEngine::validate_process_args(&config.executable, &config.args)?;
         SecurityEngine::validate_environment_overrides(&config.environment)?;
 
-        let app_log_dir = self.log_root.join(config.app_id.replace('.', "-"));
+        let safe_app_dir = config.app_id.replace(['.', '/', '\\'], "-");
+        let app_log_dir = self.log_root.join(safe_app_dir);
         fs::create_dir_all(&app_log_dir)?;
 
         let stdout_log_path = app_log_dir.join("stdout.log");
@@ -222,7 +223,7 @@ impl ExecutionLifecycleManager {
             thread::sleep(Duration::from_millis(10));
         };
 
-        let duration_ms = start.elapsed().as_millis() as u64;
+        let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
         let exit_code = exit_status.and_then(|s| s.code());
 
         let failed = timed_out || cancelled || exit_code.unwrap_or(-1) != 0;

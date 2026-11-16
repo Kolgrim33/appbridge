@@ -36,13 +36,14 @@ impl ExecutionBackend for WineBackend {
             });
         }
 
-        let sanitized_app = ctx.descriptor.app_id.replace('.', "-");
+        let sanitized_app = ctx.descriptor.app_id.replace(['.', '/', '\\'], "-");
+        let sanitized_name = ctx.descriptor.name.replace(['/', '\\'], "-").replace("..", "-");
         let env_id = format!("wine-{sanitized_app}");
         let prefix_dir = ctx.data_root.join("environments").join(&env_id).join("pfx");
         let drive_c_app = prefix_dir
             .join("drive_c")
             .join("Program Files")
-            .join(&ctx.descriptor.name);
+            .join(&sanitized_name);
         fs::create_dir_all(&drive_c_app).map_err(|source| BackendError::Io {
             backend: BackendId::Wine,
             source,
@@ -95,12 +96,25 @@ impl ExecutionBackend for WineBackend {
         if ctx.descriptor.package_path.is_file()
             && ctx.descriptor.format != PackageFormat::BridgeRecipe
         {
-            let _ = fs::copy(&ctx.descriptor.package_path, &staged_target);
+            fs::copy(&ctx.descriptor.package_path, &staged_target).map_err(|source| {
+                BackendError::Io {
+                    backend: BackendId::Wine,
+                    source,
+                }
+            })?;
             if let Some(src_dir) = ctx.descriptor.package_path.parent() {
                 for dll in &ctx.descriptor.shared_libraries {
-                    let candidate_dll = src_dir.join(dll);
+                    let Some(dll_name) = Path::new(dll).file_name() else {
+                        continue;
+                    };
+                    let candidate_dll = src_dir.join(dll_name);
                     if candidate_dll.is_file() {
-                        let _ = fs::copy(&candidate_dll, drive_c_app.join(dll));
+                        fs::copy(&candidate_dll, drive_c_app.join(dll_name)).map_err(|source| {
+                            BackendError::Io {
+                                backend: BackendId::Wine,
+                                source,
+                            }
+                        })?;
                     }
                 }
             }

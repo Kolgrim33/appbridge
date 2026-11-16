@@ -191,10 +191,20 @@ impl SourceBuildEngine {
 
     fn extract_cargo_package_name(source_dir: &Path) -> Option<String> {
         let content = fs::read_to_string(source_dir.join("Cargo.toml")).ok()?;
+        Self::extract_cargo_package_name_from_str(&content)
+    }
+
+    fn extract_cargo_package_name_from_str(content: &str) -> Option<String> {
+        let mut in_package = false;
         for line in content.lines() {
             let trimmed = line.trim();
-            if let Some(rest) = trimmed.strip_prefix("name")
-                && let Some((_, val)) = rest.split_once('=')
+            if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                in_package = trimmed == "[package]";
+                continue;
+            }
+            if in_package
+                && let Some((key, val)) = trimmed.split_once('=')
+                && key.trim() == "name"
             {
                 let clean = val.trim().trim_matches('"').trim_matches('\'');
                 if !clean.is_empty() {
@@ -218,5 +228,29 @@ impl SourceBuildEngine {
             "macos-aarch64" | "aarch64-apple-darwin" => Ok("aarch64-apple-darwin".to_string()),
             other => Err(BuildError::UnsupportedTarget(other.to_string())),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_cargo_package_name_only_matches_package_name() {
+        let toml = r#"
+[workspace]
+members = ["a"]
+
+[[bin]]
+name = "helper"
+
+[package]
+namespace = "wrong"
+name = "real-app"
+"#;
+        assert_eq!(
+            SourceBuildEngine::extract_cargo_package_name_from_str(toml),
+            Some("real-app".to_string())
+        );
     }
 }

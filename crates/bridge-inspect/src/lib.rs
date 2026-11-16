@@ -406,7 +406,12 @@ impl InspectionEngine {
             {
                 return false;
             }
-            if !SAFE_PREFIXES.iter().any(|p| line.starts_with(p)) {
+            if !SAFE_PREFIXES.iter().any(|p| {
+                line == *p
+                    || line
+                        .strip_prefix(p)
+                        .is_some_and(|rest| rest.starts_with(char::is_whitespace))
+            }) {
                 return false;
             }
         }
@@ -593,7 +598,9 @@ impl InspectionEngine {
             Some(content)
         } else {
             std::process::Command::new("tar")
-                .args(["-xOf", &path.display().to_string(), ".PKGINFO"])
+                .arg("-xOf")
+                .arg(path)
+                .arg(".PKGINFO")
                 .output()
                 .ok()
                 .filter(|o| o.status.success())
@@ -1086,9 +1093,8 @@ fn extract_xml_attr(xml: &str, attr_name: &str) -> Option<String> {
 fn extract_plist_key(plist: &str, key: &str) -> Option<String> {
     let key_tag = format!("<key>{key}</key>");
     let pos = plist.find(&key_tag)? + key_tag.len();
-    let rest = &plist[pos..];
-    let str_start = rest.find("<string>")? + "<string>".len();
-    let str_rest = &rest[str_start..];
+    let rest = plist[pos..].trim_start();
+    let str_rest = rest.strip_prefix("<string>")?;
     let str_end = str_rest.find("</string>")?;
     Some(str_rest[..str_end].trim().to_string())
 }
@@ -1127,5 +1133,35 @@ mod tests {
             assert_eq!(desc.format, PackageFormat::ElfBinary);
             assert!(!desc.shared_libraries.is_empty());
         }
+    }
+
+    #[test]
+    fn test_declarative_script_word_boundary() {
+        assert!(InspectionEngine::is_declarative_maintainer_script(
+            "#!/bin/sh\nset -e\nldconfig\n"
+        ));
+        assert!(!InspectionEngine::is_declarative_maintainer_script(
+            "#!/bin/sh\ntrue_evil_command\n"
+        ));
+        assert!(!InspectionEngine::is_declarative_maintainer_script(
+            "#!/bin/sh\nldconfig_backdoor\n"
+        ));
+    }
+
+    #[test]
+    fn test_extract_plist_key_ignores_non_string_values() {
+        let plist = r#"
+<dict>
+    <key>LSUIElement</key>
+    <true/>
+    <key>CFBundleIdentifier</key>
+    <string>com.example.app</string>
+</dict>
+"#;
+        assert_eq!(extract_plist_key(plist, "LSUIElement"), None);
+        assert_eq!(
+            extract_plist_key(plist, "CFBundleIdentifier"),
+            Some("com.example.app".to_string())
+        );
     }
 }

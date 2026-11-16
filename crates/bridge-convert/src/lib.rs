@@ -221,7 +221,8 @@ impl ConversionEngine {
         let mut ar_archive = ar::Archive::new(file);
         let mut extracted_files: Vec<PathBuf> = Vec::new();
 
-        while let Some(Ok(mut entry)) = ar_archive.next_entry() {
+        while let Some(entry_res) = ar_archive.next_entry() {
+            let mut entry = entry_res?;
             let id = String::from_utf8_lossy(entry.header().identifier()).to_string();
             if id.starts_with("data.tar") {
                 let mut tar_bytes = Vec::new();
@@ -236,7 +237,7 @@ impl ConversionEngine {
                 let mut total_bytes: u64 = 0;
                 let mut entry_count: usize = 0;
                 for item_res in data_tar.entries()? {
-                    let mut item = item_res?;
+                    let item = item_res?;
                     entry_count += 1;
                     if entry_count > bridge_security::DEFAULT_MAX_ARCHIVE_ENTRIES {
                         return Err(ConvertError::Security(
@@ -281,8 +282,10 @@ impl ConversionEngine {
                         if let Some(p) = safe_dest.parent() {
                             fs::create_dir_all(p)?;
                         }
+                        let remaining = bridge_security::DEFAULT_MAX_ARCHIVE_EXTRACT_BYTES
+                            .saturating_sub(total_bytes);
                         let mut out_f = File::create(&safe_dest)?;
-                        let copied = io::copy(&mut item, &mut out_f)?;
+                        let copied = io::copy(&mut item.take(remaining.saturating_add(1)), &mut out_f)?;
                         total_bytes = total_bytes.saturating_add(copied);
                         if total_bytes > bridge_security::DEFAULT_MAX_ARCHIVE_EXTRACT_BYTES {
                             return Err(ConvertError::Security(
