@@ -32,6 +32,7 @@ impl ExecutionBackend for NativeBackend {
         let safe_app_id = ctx.descriptor.app_id.replace(['/', '\\'], "-").replace("..", "-");
         let env_id = format!("native-{safe_app_id}");
         let install_dir = ctx.data_root.join("environments").join(&env_id);
+        let existed_before = install_dir.exists();
         fs::create_dir_all(&install_dir).map_err(|source| BackendError::Io {
             backend: BackendId::Native,
             source,
@@ -82,69 +83,62 @@ impl ExecutionBackend for NativeBackend {
                 let db_dir = install_dir.join("var/lib/pacman");
                 let cache_dir = install_dir.join("var/cache/pacman/pkg");
                 let log_dir = install_dir.join("var/log");
-                let _ = fs::create_dir_all(&db_dir);
-                let _ = fs::create_dir_all(&cache_dir);
-                let _ = fs::create_dir_all(&log_dir);
+                for dir in [&db_dir, &cache_dir, &log_dir] {
+                    fs::create_dir_all(dir).map_err(|source| BackendError::Io {
+                        backend: BackendId::Native,
+                        source,
+                    })?;
+                }
                 let pacman_conf = install_dir.join("pacman.conf");
-                let _ = fs::write(
+                fs::write(
                     &pacman_conf,
                     "[options]\nArchitecture = auto\nSigLevel = Never\n",
-                );
+                )
+                .map_err(|source| BackendError::Io {
+                    backend: BackendId::Native,
+                    source,
+                })?;
 
-                let bin_name = Path::new(&ctx.recipe.execution.executable)
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or(&ctx.descriptor.name);
-                let installed_bin = install_dir.join("usr/bin").join(bin_name);
+                let exec_rel = ctx.recipe.execution.executable.trim_start_matches('/');
+                let installed_bin = if ctx.recipe.execution.executable.starts_with('/')
+                    && !exec_rel.is_empty()
+                {
+                    install_dir.join(exec_rel)
+                } else {
+                    let bin_name = Path::new(&ctx.recipe.execution.executable)
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or(&ctx.descriptor.name);
+                    install_dir.join("usr/bin").join(bin_name)
+                };
                 let launch_target = if installed_bin.exists() || ctx.host.has_tool("pacman") {
                     installed_bin.display().to_string()
                 } else {
                     ctx.recipe.execution.executable.clone()
                 };
 
-                if ctx.host.has_tool("fakeroot") {
-                    (
-                        "fakeroot".to_string(),
-                        vec![
-                            "pacman".to_string(),
-                            "--config".to_string(),
-                            pacman_conf.display().to_string(),
-                            "--root".to_string(),
-                            install_dir.display().to_string(),
-                            "--dbpath".to_string(),
-                            db_dir.display().to_string(),
-                            "--cachedir".to_string(),
-                            cache_dir.display().to_string(),
-                            "--logfile".to_string(),
-                            log_dir.join("pacman.log").display().to_string(),
-                            "-U".to_string(),
-                            "--noconfirm".to_string(),
-                            "-dd".to_string(),
-                            pkg_str,
-                        ],
-                        launch_target,
-                    )
+                let mut pacman_args = vec![
+                    "--config".to_string(),
+                    pacman_conf.display().to_string(),
+                    "--root".to_string(),
+                    install_dir.display().to_string(),
+                    "--dbpath".to_string(),
+                    db_dir.display().to_string(),
+                    "--cachedir".to_string(),
+                    cache_dir.display().to_string(),
+                    "--logfile".to_string(),
+                    log_dir.join("pacman.log").display().to_string(),
+                    "-U".to_string(),
+                    "--noconfirm".to_string(),
+                    "-dd".to_string(),
+                    pkg_str,
+                ];
+
+                if ctx.host.has_tool("fakeroot") && ctx.host.has_tool("pacman") {
+                    pacman_args.insert(0, "pacman".to_string());
+                    ("fakeroot".to_string(), pacman_args, launch_target)
                 } else {
-                    (
-                        "pacman".to_string(),
-                        vec![
-                            "--config".to_string(),
-                            pacman_conf.display().to_string(),
-                            "--root".to_string(),
-                            install_dir.display().to_string(),
-                            "--dbpath".to_string(),
-                            db_dir.display().to_string(),
-                            "--cachedir".to_string(),
-                            cache_dir.display().to_string(),
-                            "--logfile".to_string(),
-                            log_dir.join("pacman.log").display().to_string(),
-                            "-U".to_string(),
-                            "--noconfirm".to_string(),
-                            "-dd".to_string(),
-                            pkg_str,
-                        ],
-                        launch_target,
-                    )
+                    ("pacman".to_string(), pacman_args, launch_target)
                 }
             }
             PackageFormat::Rpm => (
@@ -177,7 +171,15 @@ impl ExecutionBackend for NativeBackend {
         };
 
         let (cmd_str, simulated) =
-            run_or_simulate(BackendId::Native, &prog, &args, &ctx.host, ctx.mode)?;
+            match run_or_simulate(BackendId::Native, &prog, &args, &ctx.host, ctx.mode) {
+                Ok(res) => res,
+                Err(err) => {
+                    if !existed_before {
+                        let _ = fs::remove_dir_all(&install_dir);
+                    }
+                    return Err(err);
+                }
+            };
 
         Ok(InstallReceipt {
             backend: BackendId::Native,
@@ -264,5 +266,68 @@ impl ExecutionBackend for NativeBackend {
             })?;
         }
         Ok(vec![format!("rm -rf {}", install_dir.display())])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bridge_spec::{
+        ApplicationDescriptor, BridgeRecipe, CpuArch, LinuxDistro, OsFamily,
+    };
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_arch_pkg_install_resolves_custom_abs_path_and_creates_pacman_conf() {
+        let base = std::env::temp_dir().join(format!("appbridge-native-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        let desc = ApplicationDescriptor {
+            app_id: "org.archlinux.opttool".to_string(),
+            name: "opttool".to_string(),
+            version: "1.0.0".to_string(),
+            summary: None,
+            maintainer: None,
+            package_path: PathBuf::from("/tmp/opttool-1.0.0-1-x86_64.pkg.tar.zst"),
+            format: PackageFormat::ArchPkg,
+            source_os: OsFamily::Linux,
+            source_distro: Some(LinuxDistro::Arch),
+            arch: CpuArch::X86_64,
+            declared_dependencies: Vec::new(),
+            shared_libraries: Vec::new(),
+            entrypoint: Some("/opt/opttool/bin/opttool".to_string()),
+            is_gui: false,
+            sha256: "deadbeef".to_string(),
+            size_bytes: 128,
+            has_install_scripts: false,
+            signature_info: None,
+            extra_metadata: BTreeMap::new(),
+        };
+        let mut host = HostProfile::synthetic(OsFamily::Linux, Some(LinuxDistro::Arch), CpuArch::X86_64);
+        host.available_tools
+            .insert("pacman".to_string(), PathBuf::from("/usr/bin/pacman"));
+        let ctx = InstallContext {
+            recipe: BridgeRecipe::from_descriptor(&desc),
+            descriptor: desc,
+            host,
+            data_root: base.clone(),
+            mode: ExecutionMode::DryRun,
+        };
+
+        let receipt = NativeBackend::new().install(&ctx).unwrap();
+        assert!(receipt.install_dir.join("pacman.conf").is_file());
+        assert!(receipt.install_dir.join("var/lib/pacman").is_dir());
+        assert_eq!(
+            receipt.installed_executable,
+            receipt
+                .install_dir
+                .join("opt/opttool/bin/opttool")
+                .display()
+                .to_string()
+        );
+
+        let _ = fs::remove_dir_all(&base);
     }
 }
