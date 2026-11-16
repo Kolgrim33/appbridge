@@ -283,8 +283,12 @@ impl HostProfile {
 
         for line in content.lines() {
             let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
             if let Some((k, v)) = line.split_once('=') {
-                let val = v.trim_matches('"').trim_matches('\'').to_lowercase();
+                let k = k.trim();
+                let val = v.trim().trim_matches('"').trim_matches('\'').to_lowercase();
                 match k {
                     "ID" => id = val,
                     "ID_LIKE" => id_like = val,
@@ -294,19 +298,22 @@ impl HostProfile {
             }
         }
 
+        let has_id_like = |needle: &str| id_like.split_whitespace().any(|t| t == needle);
+
         let distro = match id.as_str() {
             "ubuntu" | "linuxmint" | "pop" => LinuxDistro::Ubuntu,
             "debian" | "kali" | "raspbian" => LinuxDistro::Debian,
-            "arch" | "manjaro" | "endeavouros" | "cachyos" => LinuxDistro::Arch,
+            "arch" | "manjaro" | "endeavouros" | "cachyos" | "artix" | "garuda" | "archarm"
+            | "steamos" => LinuxDistro::Arch,
             "fedora" => LinuxDistro::Fedora,
             "rhel" | "centos" | "rocky" | "almalinux" => LinuxDistro::RedHat,
             "opensuse" | "opensuse-tumbleweed" | "opensuse-leap" => LinuxDistro::OpenSuse,
             "alpine" => LinuxDistro::Alpine,
             "nixos" => LinuxDistro::NixOs,
-            _ if id_like.contains("ubuntu") => LinuxDistro::Ubuntu,
-            _ if id_like.contains("debian") => LinuxDistro::Debian,
-            _ if id_like.contains("arch") => LinuxDistro::Arch,
-            _ if id_like.contains("fedora") || id_like.contains("rhel") => LinuxDistro::Fedora,
+            _ if has_id_like("ubuntu") => LinuxDistro::Ubuntu,
+            _ if has_id_like("debian") => LinuxDistro::Debian,
+            _ if has_id_like("arch") || has_id_like("archlinux") => LinuxDistro::Arch,
+            _ if has_id_like("fedora") || has_id_like("rhel") => LinuxDistro::Fedora,
             "" => LinuxDistro::Generic,
             other => LinuxDistro::Custom(other.to_string()),
         };
@@ -354,8 +361,10 @@ impl HostProfile {
             .arg("-r")
             .output()
             .ok()
+            .filter(|o| o.status.success())
             .and_then(|o| String::from_utf8(o.stdout).ok())
             .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 }
 
@@ -420,5 +429,25 @@ ID_LIKE=debian
         let profile = HostProfile::detect();
         assert_ne!(profile.os, OsFamily::Unknown);
         assert_ne!(profile.arch, CpuArch::Unknown);
+        if profile.os == OsFamily::Linux {
+            assert!(
+                profile
+                    .kernel_version
+                    .as_deref()
+                    .is_some_and(|k| !k.is_empty())
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_os_release_arch_derivatives_and_token_matching() {
+        let garuda = "ID=garuda\nID_LIKE=\"arch\"\n";
+        assert_eq!(HostProfile::parse_os_release(garuda).0, Some(LinuxDistro::Arch));
+
+        let custom = "ID=monarch\nID_LIKE=\"research\"\n";
+        assert_eq!(
+            HostProfile::parse_os_release(custom).0,
+            Some(LinuxDistro::Custom("monarch".to_string()))
+        );
     }
 }
