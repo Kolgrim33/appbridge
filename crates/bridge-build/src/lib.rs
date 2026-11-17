@@ -75,6 +75,7 @@ impl SourceBuildEngine {
             });
         }
 
+        let is_native_host_target = target_platform.eq_ignore_ascii_case("native");
         let target_triple = Self::resolve_target_triple(target_platform)?;
         let build_system = descriptor
             .extra_metadata
@@ -88,9 +89,8 @@ impl SourceBuildEngine {
             .unwrap_or_else(|| descriptor.name.clone());
 
         let (prog, args, toolchain_ready) = match build_system.as_str() {
-            "cargo" => (
-                "cargo".to_string(),
-                vec![
+            "cargo" => {
+                let mut cargo_args = vec![
                     "build".to_string(),
                     "--release".to_string(),
                     "--manifest-path".to_string(),
@@ -99,11 +99,13 @@ impl SourceBuildEngine {
                         .join("Cargo.toml")
                         .display()
                         .to_string(),
-                    "--target".to_string(),
-                    target_triple.clone(),
-                ],
-                host.has_tool("cargo"),
-            ),
+                ];
+                if !is_native_host_target {
+                    cargo_args.push("--target".to_string());
+                    cargo_args.push(target_triple.clone());
+                }
+                ("cargo".to_string(), cargo_args, host.has_tool("cargo"))
+            }
             "cmake" => (
                 "cmake".to_string(),
                 vec![
@@ -136,17 +138,27 @@ impl SourceBuildEngine {
             if output.status.success() {
                 executed = true;
                 if build_system == "cargo" {
-                    let bin_name = if target_triple.contains("windows") {
+                    let bin_name = if target_triple.contains("windows")
+                        || (is_native_host_target && cfg!(windows))
+                    {
                         format!("{cargo_pkg_name}.exe")
                     } else {
                         cargo_pkg_name.clone()
                     };
-                    let candidate = descriptor
-                        .package_path
-                        .join("target")
-                        .join(&target_triple)
-                        .join("release")
-                        .join(&bin_name);
+                    let candidate = if is_native_host_target {
+                        descriptor
+                            .package_path
+                            .join("target")
+                            .join("release")
+                            .join(&bin_name)
+                    } else {
+                        descriptor
+                            .package_path
+                            .join("target")
+                            .join(&target_triple)
+                            .join("release")
+                            .join(&bin_name)
+                    };
                     if candidate.is_file() {
                         let sha = SecurityEngine::compute_sha256(&candidate)?;
                         built_artifact_path = Some(candidate.clone());
@@ -217,6 +229,11 @@ impl SourceBuildEngine {
 
     pub fn resolve_target_triple(target: &str) -> Result<String, BuildError> {
         match target.to_lowercase().as_str() {
+            "native" => Ok(format!(
+                "{}-{}",
+                std::env::consts::ARCH,
+                std::env::consts::OS
+            )),
             "linux-x86_64" | "x86_64-unknown-linux-gnu" => {
                 Ok("x86_64-unknown-linux-gnu".to_string())
             }

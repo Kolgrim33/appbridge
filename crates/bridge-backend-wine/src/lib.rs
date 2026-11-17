@@ -37,7 +37,11 @@ impl ExecutionBackend for WineBackend {
         }
 
         let sanitized_app = ctx.descriptor.app_id.replace(['.', '/', '\\'], "-");
-        let sanitized_name = ctx.descriptor.name.replace(['/', '\\'], "-").replace("..", "-");
+        let sanitized_name = ctx
+            .descriptor
+            .name
+            .replace(['/', '\\'], "-")
+            .replace("..", "-");
         let env_id = format!("wine-{sanitized_app}");
         let prefix_dir = ctx.data_root.join("environments").join(&env_id).join("pfx");
         let drive_c_app = prefix_dir

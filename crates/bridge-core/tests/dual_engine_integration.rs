@@ -31,12 +31,16 @@ use std::time::Duration;
 use tempfile::TempDir;
 
 fn arch_linux_engine(tmp: &TempDir) -> AppBridgeEngine {
-    let host = HostProfile::detect();
+    let host = if cfg!(target_os = "linux") {
+        HostProfile::detect()
+    } else {
+        HostProfile::synthetic(OsFamily::Linux, Some(LinuxDistro::Arch), CpuArch::X86_64)
+    };
     AppBridgeEngine::with_host_and_data_root(host, tmp.path()).unwrap()
 }
 
 /// Compiles a small C program into a real native x86_64 ELF binary using `gcc` on Linux,
-/// or writes a portable script payload on non-Linux hosts where `gcc` targets Mach-O/PE.
+/// or writes a valid 64-byte ELF64 x86_64 header on non-Linux hosts where `gcc` targets Mach-O/PE.
 fn compile_c_elf_binary(out_bin: &Path, banner: &str) {
     if cfg!(target_os = "linux") {
         let c_src = out_bin.with_extension("c");
@@ -57,7 +61,18 @@ fn compile_c_elf_binary(out_bin: &Path, banner: &str) {
             return;
         }
     }
-    fs::write(out_bin, format!("#!/bin/sh\necho \"{banner}\"\n")).expect("write fallback script");
+    // Minimal 64-byte ELF64 little-endian x86_64 executable header so `goblin` and
+    // `bridge-inspect` identify `out_bin` as `PackageFormat::ElfBinary` (`CpuArch::X86_64`) on macOS/Windows.
+    let mut elf = [0u8; 64];
+    elf[0..4].copy_from_slice(b"\x7FELF");
+    elf[4] = 2; // EI_CLASS = ELFCLASS64
+    elf[5] = 1; // EI_DATA = ELFDATA2LSB
+    elf[6] = 1; // EI_VERSION = EV_CURRENT
+    elf[16..18].copy_from_slice(&2u16.to_le_bytes()); // e_type = ET_EXEC
+    elf[18..20].copy_from_slice(&0x3Eu16.to_le_bytes()); // e_machine = EM_X86_64
+    elf[20..24].copy_from_slice(&1u32.to_le_bytes()); // e_version = EV_CURRENT
+    elf[52..54].copy_from_slice(&64u16.to_le_bytes()); // e_ehsize = 64
+    fs::write(out_bin, elf).expect("write fallback ELF64 header");
 }
 
 #[test]
@@ -743,8 +758,13 @@ fn test_5_live_source_to_platform_build_and_execution() {
     )
     .unwrap();
 
+    let build_target = if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        "linux-x86_64"
+    } else {
+        "native"
+    };
     let plan = engine
-        .build_source(&src_project, "linux-x86_64", false)
+        .build_source(&src_project, build_target, false)
         .unwrap();
     assert!(plan.executed);
     let built_bin = plan

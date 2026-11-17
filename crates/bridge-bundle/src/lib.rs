@@ -775,6 +775,7 @@ impl BundleManager {
             if let Some(parent) = safe_target.parent() {
                 fs::create_dir_all(parent)?;
             }
+            #[cfg(unix)]
             let raw_mode = entry.header().mode().unwrap_or(0o644);
             let mut out = File::create(&safe_target)?;
             io::copy(&mut entry, &mut out)?;

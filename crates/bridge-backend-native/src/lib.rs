@@ -29,7 +29,11 @@ impl ExecutionBackend for NativeBackend {
     }
 
     fn install(&self, ctx: &InstallContext) -> Result<InstallReceipt, BackendError> {
-        let safe_app_id = ctx.descriptor.app_id.replace(['/', '\\'], "-").replace("..", "-");
+        let safe_app_id = ctx
+            .descriptor
+            .app_id
+            .replace(['/', '\\'], "-")
+            .replace("..", "-");
         let env_id = format!("native-{safe_app_id}");
         let install_dir = ctx.data_root.join("environments").join(&env_id);
         let existed_before = install_dir.exists();
@@ -100,17 +104,16 @@ impl ExecutionBackend for NativeBackend {
                 })?;
 
                 let exec_rel = ctx.recipe.execution.executable.trim_start_matches('/');
-                let installed_bin = if ctx.recipe.execution.executable.starts_with('/')
-                    && !exec_rel.is_empty()
-                {
-                    install_dir.join(exec_rel)
-                } else {
-                    let bin_name = Path::new(&ctx.recipe.execution.executable)
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or(&ctx.descriptor.name);
-                    install_dir.join("usr/bin").join(bin_name)
-                };
+                let installed_bin =
+                    if ctx.recipe.execution.executable.starts_with('/') && !exec_rel.is_empty() {
+                        install_dir.join(exec_rel)
+                    } else {
+                        let bin_name = Path::new(&ctx.recipe.execution.executable)
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or(&ctx.descriptor.name);
+                        install_dir.join("usr/bin").join(bin_name)
+                    };
                 let launch_target = if installed_bin.exists() || ctx.host.has_tool("pacman") {
                     installed_bin.display().to_string()
                 } else {
@@ -272,15 +275,14 @@ impl ExecutionBackend for NativeBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bridge_spec::{
-        ApplicationDescriptor, BridgeRecipe, CpuArch, LinuxDistro, OsFamily,
-    };
+    use bridge_spec::{ApplicationDescriptor, BridgeRecipe, CpuArch, LinuxDistro, OsFamily};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
     #[test]
     fn test_arch_pkg_install_resolves_custom_abs_path_and_creates_pacman_conf() {
-        let base = std::env::temp_dir().join(format!("appbridge-native-test-{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("appbridge-native-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).unwrap();
 
@@ -305,7 +307,8 @@ mod tests {
             signature_info: None,
             extra_metadata: BTreeMap::new(),
         };
-        let mut host = HostProfile::synthetic(OsFamily::Linux, Some(LinuxDistro::Arch), CpuArch::X86_64);
+        let mut host =
+            HostProfile::synthetic(OsFamily::Linux, Some(LinuxDistro::Arch), CpuArch::X86_64);
         host.available_tools
             .insert("pacman".to_string(), PathBuf::from("/usr/bin/pacman"));
         let ctx = InstallContext {

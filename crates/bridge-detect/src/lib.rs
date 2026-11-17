@@ -442,7 +442,10 @@ ID_LIKE=debian
     #[test]
     fn test_parse_os_release_arch_derivatives_and_token_matching() {
         let garuda = "ID=garuda\nID_LIKE=\"arch\"\n";
-        assert_eq!(HostProfile::parse_os_release(garuda).0, Some(LinuxDistro::Arch));
+        assert_eq!(
+            HostProfile::parse_os_release(garuda).0,
+            Some(LinuxDistro::Arch)
+        );
 
         let custom = "ID=monarch\nID_LIKE=\"research\"\n";
         assert_eq!(

@@ -285,7 +285,8 @@ impl ConversionEngine {
                         let remaining = bridge_security::DEFAULT_MAX_ARCHIVE_EXTRACT_BYTES
                             .saturating_sub(total_bytes);
                         let mut out_f = File::create(&safe_dest)?;
-                        let copied = io::copy(&mut item.take(remaining.saturating_add(1)), &mut out_f)?;
+                        let copied =
+                            io::copy(&mut item.take(remaining.saturating_add(1)), &mut out_f)?;
                         total_bytes = total_bytes.saturating_add(copied);
                         if total_bytes > bridge_security::DEFAULT_MAX_ARCHIVE_EXTRACT_BYTES {
                             return Err(ConvertError::Security(

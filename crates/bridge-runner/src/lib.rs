@@ -278,11 +278,19 @@ mod tests {
         let mgr = ExecutionLifecycleManager::new(tmp.path());
 
         // 1. Successful process execution
+        let (ok_exe, ok_args) = if cfg!(windows) {
+            (
+                "cmd".to_string(),
+                vec!["/C".to_string(), "echo LIFECYCLE_OK".to_string()],
+            )
+        } else {
+            ("echo".to_string(), vec!["LIFECYCLE_OK".to_string()])
+        };
         let ok_cfg = ProcessExecutionConfig {
             app_id: "org.example.ok".to_string(),
             backend: BackendId::Native,
-            executable: "echo".to_string(),
-            args: vec!["LIFECYCLE_OK".to_string()],
+            executable: ok_exe,
+            args: ok_args,
             environment: BTreeMap::new(),
             working_dir: None,
             timeout: Some(Duration::from_secs(5)),
@@ -296,11 +304,19 @@ mod tests {
         assert_eq!(stdout.trim(), "LIFECYCLE_OK");
 
         // 2. Failing process generates structured crash report
+        let (fail_exe, fail_args) = if cfg!(windows) {
+            (
+                "cmd".to_string(),
+                vec!["/C".to_string(), "exit 1".to_string()],
+            )
+        } else {
+            ("false".to_string(), Vec::new())
+        };
         let fail_cfg = ProcessExecutionConfig {
             app_id: "org.example.fail".to_string(),
             backend: BackendId::Native,
-            executable: "false".to_string(),
-            args: Vec::new(),
+            executable: fail_exe,
+            args: fail_args,
             environment: BTreeMap::new(),
             working_dir: None,
             timeout: Some(Duration::from_secs(5)),
