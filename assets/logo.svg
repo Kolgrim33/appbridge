@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" fill="none">
+  <defs>
+    <!-- Mask to create the crisp negative-space cutout around the Rust-orange bridge arch -->
+    <mask id="arch-cutout">
+      <rect width="512" height="512" fill="white"/>
+      <path d="M 116 294 A 140 116 0 0 1 396 294" stroke="black" stroke-width="46" stroke-linecap="butt" fill="none"/>
+    </mask>
+  </defs>
+
+  <!-- Deep Obsidian Background -->
+  <rect width="512" height="512" rx="96" fill="#0B0F17"/>
+
+  <!-- Three Vertical OS Pillars (Linux, Windows, macOS) with Negative-Space Arch Cutout -->
+  <g mask="url(#arch-cutout)">
+    <!-- Left Pillar (Electric Cyan) -->
+    <rect x="154" y="128" width="26" height="256" fill="#2AD1EA"/>
+    <!-- Center Pillar (Cool Slate) -->
+    <rect x="243" y="128" width="26" height="256" fill="#B8CCD8"/>
+    <!-- Right Pillar (Electric Cyan) -->
+    <rect x="332" y="128" width="26" height="256" fill="#2AD1EA"/>
+  </g>
+
+  <!-- Sweeping Rust-Orange Bridge Arch -->
+  <path d="M 116 294 A 140 116 0 0 1 396 294" stroke="#DE5425" stroke-width="26" stroke-linecap="butt" fill="none"/>
+</svg>

@@ -1,7 +1,13 @@
-# AppBridge
+<p align="center">
+  <img src="assets/logo.svg" alt="AppBridge Logo" width="140" height="140" />
+</p>
 
-[![CI & Engineering Validation](https://github.com/Kolgrim33/appbridge/actions/workflows/ci.yml/badge.svg)](https://github.com/Kolgrim33/appbridge/actions/workflows/ci.yml)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+<h1 align="center">AppBridge</h1>
+
+<p align="center">
+  <a href="https://github.com/Kolgrim33/appbridge/actions/workflows/ci.yml"><img src="https://github.com/Kolgrim33/appbridge/actions/workflows/ci.yml/badge.svg" alt="CI & Engineering Validation" /></a>
+  <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0" /></a>
+</p>
 
 ## A Rust-Powered Universal Application Portability Engine
 
