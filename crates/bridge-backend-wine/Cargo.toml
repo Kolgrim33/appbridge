@@ -3,6 +3,7 @@ name = "bridge-backend-wine"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 description = "Windows compatibility layer backend (Wine & Winetricks prefix manager) for AppBridge"
 
 [dependencies]

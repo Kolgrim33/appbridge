@@ -3,6 +3,7 @@ name = "bridge-state"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 description = "SQLite-backed unified application registry, audit log, and environment backup/restore manager"
 
 [dependencies]

@@ -3,6 +3,7 @@ name = "bridge-backend-distrobox"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 description = "Cross-distribution Linux container backend (Distrobox / Podman) for AppBridge"
 
 [dependencies]

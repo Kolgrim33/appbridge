@@ -3,6 +3,7 @@ name = "bridge-detect"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 description = "Host operating system, CPU architecture, hardware capability, and backend tool detection"
 
 [dependencies]

@@ -3,6 +3,7 @@ name = "bridge-backend-vm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 description = "Virtual machine orchestration backend (QEMU/KVM, Lima, UTM) for AppBridge"
 
 [dependencies]

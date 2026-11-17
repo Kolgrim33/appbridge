@@ -3,6 +3,7 @@ name = "appbridge-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 description = "Command-line interface for the AppBridge cross-platform application portability engine"
 
 [[bin]]

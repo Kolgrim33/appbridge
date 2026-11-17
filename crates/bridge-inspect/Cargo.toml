@@ -3,6 +3,7 @@ name = "bridge-inspect"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 description = "Universal application package and binary inspection engine for Linux, Windows, and macOS formats"
 
 [dependencies]

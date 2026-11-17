@@ -3,6 +3,7 @@ name = "bridge-convert"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 description = "Package conversion engine (DEB-to-Arch, AppImage AppDir, and Universal .appbridge bundling)"
 
 [dependencies]

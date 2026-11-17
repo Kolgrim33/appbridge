@@ -30,6 +30,7 @@ members = [
 version = "0.2.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+authors = ["Selby Mashiki"]
 
 [workspace.dependencies]
 serde = { version = "1.0", features = ["derive"] }

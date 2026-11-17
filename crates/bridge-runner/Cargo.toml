@@ -3,6 +3,7 @@ name = "bridge-runner"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 description = "Run Engine & Execution Lifecycle Manager for AppBridge"
 
 [dependencies]

@@ -3,6 +3,7 @@ name = "bridge-resolver"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
 description = "Cross-platform and cross-distribution dependency and shared library resolver"
 
 [dependencies]
