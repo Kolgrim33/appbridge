@@ -1129,9 +1129,14 @@ mod tests {
         if ls_path.exists() {
             let engine = InspectionEngine::new();
             let desc = engine.inspect(ls_path).unwrap();
-            assert_eq!(desc.source_os, OsFamily::Linux);
-            assert_eq!(desc.format, PackageFormat::ElfBinary);
-            assert!(!desc.shared_libraries.is_empty());
+            if cfg!(target_os = "macos") {
+                assert_eq!(desc.source_os, OsFamily::MacOs);
+                assert_eq!(desc.format, PackageFormat::MachOBinary);
+            } else {
+                assert_eq!(desc.source_os, OsFamily::Linux);
+                assert_eq!(desc.format, PackageFormat::ElfBinary);
+                assert!(!desc.shared_libraries.is_empty());
+            }
         }
     }
 
