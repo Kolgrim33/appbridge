@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 470" width="880" height="470">
+  <style>
+    .bg { fill: #0B0F17; stroke: #1E293B; stroke-width: 2; }
+    .header { fill: #111827; }
+    .title { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; fill: #94A3B8; font-weight: 600; }
+    .code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13.5px; fill: #E2E8F0; }
+    .prompt { fill: #F97316; font-weight: 700; }
+    .cmd { fill: #38BDF8; font-weight: 600; }
+    .ok { fill: #4ADE80; font-weight: 600; }
+    .warn { fill: #FACC15; font-weight: 600; }
+    .muted { fill: #64748B; }
+    .accent { fill: #FB923C; font-weight: 600; }
+
+    @keyframes fade1 { 0%, 5% { opacity: 0; } 10%, 100% { opacity: 1; } }
+    @keyframes fade2 { 0%, 18% { opacity: 0; } 24%, 100% { opacity: 1; } }
+    @keyframes fade3 { 0%, 40% { opacity: 0; } 46%, 100% { opacity: 1; } }
+    @keyframes fade4 { 0%, 54% { opacity: 0; } 60%, 100% { opacity: 1; } }
+    @keyframes fade5 { 0%, 72% { opacity: 0; } 78%, 100% { opacity: 1; } }
+    @keyframes fade6 { 0%, 84% { opacity: 0; } 90%, 100% { opacity: 1; } }
+
+    .step1 { animation: fade1 12s infinite; }
+    .step2 { animation: fade2 12s infinite; }
+    .step3 { animation: fade3 12s infinite; }
+    .step4 { animation: fade4 12s infinite; }
+    .step5 { animation: fade5 12s infinite; }
+    .step6 { animation: fade6 12s infinite; }
+  </style>
+
+  <!-- Terminal Window Frame -->
+  <rect x="2" y="2" width="876" height="466" rx="14" class="bg"/>
+  <path d="M 2 16 Q 2 2 16 2 L 864 2 Q 878 2 878 16 L 878 40 L 2 40 Z" class="header"/>
+  <circle cx="24" cy="21" r="6.5" fill="#EF4444"/>
+  <circle cx="46" cy="21" r="6.5" fill="#F59E0B"/>
+  <circle cx="68" cy="21" r="6.5" fill="#10B981"/>
+  <text x="440" y="26" text-anchor="middle" class="title">appbridge — Universal Application Running &amp; Conversion Engine</text>
+
+  <!-- Step 1: Plan a Windows DX12 Game on Arch Linux -->
+  <g class="step1">
+    <text x="24" y="72" class="code"><tspan class="prompt">❯</tspan> <tspan class="cmd">appbridge plan</tspan> ./CyberArena-DX12.exe --convert-to arch</text>
+  </g>
+  <g class="step2">
+    <text x="24" y="98" class="code"><tspan class="muted">[RUN ENGINE]</tspan>        Strategy: <tspan class="accent">Windows compatibility layer (Wine)</tspan> | Score: <tspan class="ok">88/100</tspan></text>
+    <text x="24" y="120" class="code"><tspan class="muted">[INSPECT PE64]</tspan>      Subsystem: WINDOWS_GUI | Anti-Cheat: <tspan class="ok">User-mode only (No Ring-0 driver)</tspan></text>
+    <text x="24" y="142" class="code"><tspan class="muted">[RUNTIME LAYERS]</tspan>    Provisioned: <tspan class="cmd">vkd3d-proton, dxvk, xinput, vcrun2022</tspan></text>
+    <text x="24" y="164" class="code"><tspan class="muted">[CONVERSION ENGINE]</tspan> Classification: <tspan class="warn">UNSUPPORTED</tspan> (Cross-OS PE64 cannot become native ELF)</text>
+  </g>
+
+  <!-- Step 2: Convert Ubuntu .deb -> Arch Linux .pkg.tar.zst -->
+  <g class="step3">
+    <text x="24" y="206" class="code"><tspan class="prompt">❯</tspan> <tspan class="cmd">appbridge convert</tspan> ./fastnote_2.1.0_amd64.deb --to arch --output ./fastnote.pkg.tar.zst</text>
+  </g>
+  <g class="step4">
+    <text x="24" y="232" class="code"><tspan class="muted">[CLASSIFICATION]</tspan>    <tspan class="ok">SAFE_TO_CONVERT</tspan> (ELF64 x86_64, SONAMEs verified, no unsafe scripts)</text>
+    <text x="24" y="254" class="code"><tspan class="muted">[DEPS MAPPED]</tspan>       libc6 (&gt;= 1:2.34-0ubuntu3) → <tspan class="cmd">glibc&gt;=2.34</tspan>, libgtk-3-0 → <tspan class="cmd">gtk3</tspan>, zlib1g → <tspan class="cmd">zlib</tspan></text>
+    <text x="24" y="276" class="code"><tspan class="ok">✔ Built Arch package</tspan> ./fastnote.pkg.tar.zst <tspan class="muted">(sha256: fe39006ec036c8a1... | pacman -U ready)</tspan></text>
+  </g>
+
+  <!-- Step 3: Create & Verify Signed Reproducible .appbridge Bundle -->
+  <g class="step5">
+    <text x="24" y="318" class="code"><tspan class="prompt">❯</tspan> <tspan class="cmd">appbridge verify-bundle</tspan> ./fastnote.appbridge</text>
+  </g>
+  <g class="step6">
+    <text x="24" y="344" class="code"><tspan class="ok">✔ Integrity OK</tspan>      All 8 archive members match SHA-256 manifest (reproducible mtime=0)</text>
+    <text x="24" y="366" class="code"><tspan class="ok">✔ Signature Valid</tspan>   Publisher key <tspan class="accent">publisher-release-key</tspan> verified over metadata/checksums.json</text>
+    <text x="24" y="388" class="code"><tspan class="ok">✔ Supply Chain</tspan>      CycloneDX 1.5 SBOM (<tspan class="cmd">metadata/sbom.cdx.json</tspan>) + SLSA Provenance present</text>
+    <text x="24" y="424" class="code"><tspan class="prompt">❯</tspan> <tspan class="cmd">appbridge run</tspan> ./fastnote.appbridge <tspan class="ok">█</tspan></text>
+  </g>
+</svg>

@@ -6,8 +6,23 @@
 
 <p align="center">
   <a href="https://github.com/Kolgrim33/appbridge/actions/workflows/ci.yml"><img src="https://github.com/Kolgrim33/appbridge/actions/workflows/ci.yml/badge.svg" alt="CI & Engineering Validation" /></a>
+  <a href="https://github.com/Kolgrim33/appbridge/releases/latest"><img src="https://img.shields.io/github/v/release/Kolgrim33/appbridge?color=orange" alt="Latest Release" /></a>
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg" alt="License: MIT OR Apache-2.0" /></a>
 </p>
+
+<p align="center">
+  <img src="assets/demo.svg" alt="AppBridge Terminal Demo" width="840" />
+</p>
+
+## Quick Install
+
+```bash
+# Install directly via Cargo (Linux, Windows, macOS)
+cargo install --git https://github.com/Kolgrim33/appbridge appbridge-cli
+
+# Or download prebuilt binaries (Linux x86_64, macOS ARM64, Windows x86_64)
+# from https://github.com/Kolgrim33/appbridge/releases/latest
+```
 
 ## A Rust-Powered Universal Application Portability Engine
 

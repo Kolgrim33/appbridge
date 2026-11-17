@@ -1,0 +1,38 @@
+# Maintainer: Kolgrim33 <https://github.com/Kolgrim33/appbridge>
+pkgname=appbridge-git
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="A Rust-powered universal application portability engine for running, converting and managing software across Linux, Windows and macOS"
+arch=('x86_64' 'aarch64')
+url="https://github.com/Kolgrim33/appbridge"
+license=('MIT' 'Apache-2.0')
+depends=('glibc' 'gcc-libs' 'zstd')
+makedepends=('cargo' 'git')
+optdepends=(
+  'wine: Run Windows PE64/PE32 executables (.exe/.msi)'
+  'distrobox: Run cross-distribution Linux packages (.deb/.rpm) in containers'
+  'qemu-full: Full virtual machine isolation fallback'
+)
+provides=('appbridge')
+conflicts=('appbridge')
+source=("git+${url}.git#branch=main")
+sha256sums=('SKIP')
+
+build() {
+  cd "${srcdir}/appbridge"
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release --bin appbridge
+}
+
+check() {
+  cd "${srcdir}/appbridge"
+  export CARGO_TARGET_DIR=target
+  cargo test --frozen -p bridge-spec -p bridge-security -p bridge-resolver
+}
+
+package() {
+  cd "${srcdir}/appbridge"
+  install -Dm755 "target/release/appbridge" "${pkgdir}/usr/bin/appbridge"
+  install -Dm644 "README.md" "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+  install -Dm644 "SECURITY.md" "${pkgdir}/usr/share/doc/${pkgname}/SECURITY.md"
+}
