@@ -38,21 +38,17 @@ Running a foreign binary through a compatibility layer (like Wine or Distrobox) 
 ### Embedding `bridge-core` in Rust tools
 
 ```rust
-use bridge_core::{
-    AppBridgeEngine, ConversionClassification, ConversionTarget, CpuArch,
-    HostProfile, LinuxDistro, OsFamily,
-};
+use bridge_core::{AppBridgeEngine, ConversionTarget, CpuArch, HostProfile, LinuxDistro, OsFamily};
+use std::path::Path;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let host = HostProfile::synthetic(OsFamily::Linux, Some(LinuxDistro::Arch), CpuArch::X86_64);
     let engine = AppBridgeEngine::with_host_and_data_root(host, "/tmp/appbridge-state")?;
 
-    let run_plan = engine.create_run_plan_for("./fixtures/winemine.exe")?;
-    let conv_plan = engine.create_conversion_plan_for(
-        "./fixtures/sample-ubuntu-app.deb",
-        ConversionTarget::Arch,
-    )?;
-    assert_eq!(conv_plan.classification, ConversionClassification::SafeToConvert);
+    let deb = Path::new("fixtures/sample-ubuntu-app.deb");
+    let (_, run_plan) = engine.create_run_plan(deb)?;
+    let (_, conv_plan) = engine.create_conversion_plan(deb, ConversionTarget::Arch)?;
+    println!("{:?} {}", run_plan.recommended_backend, conv_plan.is_safe_to_convert);
     Ok(())
 }
 ```
