@@ -1,0 +1,30 @@
+name: Bug report
+description: Report a crash, bad conversion, or unexpected behavior in AppBridge
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug and what you expected instead.
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command executed
+      placeholder: appbridge convert foo.deb --to arch -o foo.pkg.tar.zst
+    validations:
+      required: true
+  - type: input
+    id: host-os
+    attributes:
+      label: Host OS & architecture
+      placeholder: Arch Linux x86_64 (kernel 6.11) / Windows 11 / macOS 15 arm64
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or crash-report.json
+      render: shell

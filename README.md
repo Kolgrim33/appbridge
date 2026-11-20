@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/demo.svg" alt="AppBridge terminal demo" width="860" />
+  <img src="assets/demo.gif" alt="AppBridge animated terminal demo" width="860" />
 </p>
 
 ## The problem
@@ -30,6 +30,16 @@ AppBridge looks at the file first and tells you what will work, then does it:
 | Rust/C/C++/Go source | Any OS | Build it and record a SHA-256 receipt |
 
 It never promises more than it can do. Every conversion is labelled `SAFE_TO_CONVERT`, `CONVERT_WITH_WARNINGS` or `UNSUPPORTED` before anything is written.
+
+## How AppBridge compares
+
+| Tool | Pre-flight binary & script inspection | `.deb` → Arch `.pkg.tar.zst` | Windows `.exe` runner | Reproducible bundles + SBOM | Embeddable Rust SDK |
+|---|---|---|---|---|---|
+| **AppBridge** | Static ELF/PE/Mach-O + `SONAME` + anti-cheat checks | Yes (`SAFE_TO_CONVERT` / warnings / blocked) | Yes (Wine + isolation + crash reports) | Yes (`.appbridge`, CycloneDX 1.5, SHA-256) | Yes (`bridge-core`) |
+| **debtap** | No pre-flight safety classification | Yes | No | No | No |
+| **alien** | Minimal (often breaks on Arch / scripts) | No (`.rpm`/`.deb`/`.tgz`) | No | No | No |
+| **Bottles / Lutris** | Community scripts | No | Yes | No | No |
+| **Distrobox** | Runs full container OS | No native package conversion | No | No | No |
 
 ## Install
 
@@ -108,4 +118,4 @@ Created by [Selby Mashiki](https://github.com/Kolgrim33).
 
 ## License
 
-Dual-licensed under [MIT](LICENSE) OR [Apache-2.0](LICENSE).
+Dual-licensed under [MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE).
