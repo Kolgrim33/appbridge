@@ -22,8 +22,13 @@ use bridge_spec::{
     ApplicationDescriptor, BackendId, BridgeRecipe, CpuArch, OsFamily, PackageFormat, SpecError,
 };
 use chrono::{DateTime, TimeZone, Utc};
+use ed25519_dalek::{
+    PUBLIC_KEY_LENGTH, SECRET_KEY_LENGTH, SIGNATURE_LENGTH, Signature, Signer, SigningKey,
+    VerifyingKey,
+};
 use flate2::read::GzDecoder;
 use flate2::{Compression, GzBuilder};
+use rand_core::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -62,6 +67,12 @@ pub enum BundleError {
 
     #[error("Bundle publisher signature verification failed: {0}")]
     SignatureVerificationFailed(String),
+
+    #[error("Invalid Ed25519 public key: {0}")]
+    InvalidPublicKey(String),
+
+    #[error("Invalid Ed25519 signing key: {0}")]
+    InvalidSigningKey(String),
 }
 
 /// Explicitly distinguishes whether a bundle's payload runs natively, via a compatibility
@@ -158,64 +169,193 @@ pub struct SbomComponent {
     pub sha256: Option<String>,
 }
 
-/// Cryptographic publisher signing keypair for `.appbridge` bundles (`metadata/signature.json`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Signature scheme identifier written to `BundleSignature::scheme`.
+pub const SIGNATURE_SCHEME: &str = "ed25519-v2";
+
+/// Domain-separation tag prefixed to every signed message, so a bundle signature can never be
+/// replayed as a signature over some other AppBridge (or third-party) payload.
+const SIGNATURE_DOMAIN_TAG: &[u8] = b"APPBRIDGE_BUNDLE_SIG_V2\0";
+
+/// Ed25519 publisher signing keypair for `.appbridge` bundles (`metadata/signature.json`).
+///
+/// The secret half never leaves this struct except through [`BundleSigningKey::secret_key_hex`]
+/// or an explicit [`BundleSigningKey::save`]. Publishers distribute only
+/// [`BundleSigningKey::public_key_hex`]; verifiers need nothing else.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(try_from = "SigningKeyFile", into = "SigningKeyFile")]
 pub struct BundleSigningKey {
     pub publisher_id: String,
-    secret_seed_hex: String,
     pub public_key_hex: String,
+    signing_key: SigningKey,
 }
 
-/// Detached cryptographic signature embedded at `metadata/signature.json`.
+/// On-disk JSON representation of a [`BundleSigningKey`].
+#[derive(Serialize, Deserialize)]
+struct SigningKeyFile {
+    scheme: String,
+    publisher_id: String,
+    secret_key_hex: String,
+    public_key_hex: String,
+}
+
+impl std::fmt::Debug for BundleSigningKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BundleSigningKey")
+            .field("publisher_id", &self.publisher_id)
+            .field("public_key_hex", &self.public_key_hex)
+            .field("signing_key", &"<redacted>")
+            .finish()
+    }
+}
+
+impl From<BundleSigningKey> for SigningKeyFile {
+    fn from(key: BundleSigningKey) -> Self {
+        Self {
+            scheme: SIGNATURE_SCHEME.to_string(),
+            secret_key_hex: key.secret_key_hex(),
+            publisher_id: key.publisher_id,
+            public_key_hex: key.public_key_hex,
+        }
+    }
+}
+
+impl TryFrom<SigningKeyFile> for BundleSigningKey {
+    type Error = BundleError;
+
+    fn try_from(file: SigningKeyFile) -> Result<Self, Self::Error> {
+        if file.scheme != SIGNATURE_SCHEME {
+            return Err(BundleError::InvalidSigningKey(format!(
+                "unsupported key scheme '{}', expected '{SIGNATURE_SCHEME}'",
+                file.scheme
+            )));
+        }
+        let key = Self::from_secret_key_hex(file.publisher_id, &file.secret_key_hex)?;
+        if !key
+            .public_key_hex
+            .eq_ignore_ascii_case(file.public_key_hex.trim())
+        {
+            return Err(BundleError::InvalidSigningKey(
+                "public_key_hex does not match the secret key in the key file".to_string(),
+            ));
+        }
+        Ok(key)
+    }
+}
+
+/// Detached Ed25519 signature embedded at `metadata/signature.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BundleSignature {
     pub scheme: String,
     pub publisher_id: String,
+    /// Hex-encoded 32-byte Ed25519 verifying (public) key of the signer.
     pub public_key_hex: String,
+    /// SHA-256 of the exact `metadata/checksums.json` bytes covered by the signature.
     pub checksums_sha256: String,
+    /// Hex-encoded 64-byte Ed25519 signature.
     pub signature_hex: String,
 }
 
 impl BundleSigningKey {
-    /// Derives a deterministic signing keypair from a publisher identifier and 32-byte secret phrase.
+    /// Generates a fresh random Ed25519 keypair from the operating system CSPRNG.
+    pub fn generate(publisher_id: impl Into<String>) -> Self {
+        Self::from_signing_key(publisher_id.into(), SigningKey::generate(&mut OsRng))
+    }
+
+    /// Derives a deterministic Ed25519 keypair whose 32-byte seed is `SHA-256(secret_phrase)`.
+    ///
+    /// Intended for tests and reproducible fixtures. Prefer [`BundleSigningKey::generate`] for
+    /// real publisher keys: a phrase is only as strong as its entropy.
     pub fn from_seed(publisher_id: impl Into<String>, secret_phrase: &str) -> Self {
-        let publisher_id = publisher_id.into();
-        let secret_seed_hex = sha256_bytes(secret_phrase.as_bytes());
-        let mut pub_hasher = Sha256::new();
-        pub_hasher.update(b"APPBRIDGE_ED25519_PUBKEY_V1:");
-        pub_hasher.update(publisher_id.as_bytes());
-        pub_hasher.update(b":");
-        pub_hasher.update(secret_seed_hex.as_bytes());
-        let public_key_hex = hex::encode(pub_hasher.finalize());
+        let seed: [u8; SECRET_KEY_LENGTH] = Sha256::digest(secret_phrase.as_bytes()).into();
+        Self::from_signing_key(publisher_id.into(), SigningKey::from_bytes(&seed))
+    }
+
+    /// Reconstructs a keypair from a hex-encoded 32-byte Ed25519 secret key.
+    pub fn from_secret_key_hex(
+        publisher_id: impl Into<String>,
+        secret_key_hex: &str,
+    ) -> Result<Self, BundleError> {
+        let bytes: [u8; SECRET_KEY_LENGTH] = decode_fixed_hex(secret_key_hex.trim())
+            .map_err(|e| BundleError::InvalidSigningKey(format!("secret key: {e}")))?;
+        Ok(Self::from_signing_key(
+            publisher_id.into(),
+            SigningKey::from_bytes(&bytes),
+        ))
+    }
+
+    fn from_signing_key(publisher_id: String, signing_key: SigningKey) -> Self {
+        let public_key_hex = hex::encode(signing_key.verifying_key().as_bytes());
         Self {
             publisher_id,
-            secret_seed_hex,
             public_key_hex,
+            signing_key,
         }
     }
 
-    /// Signs the canonical `metadata/checksums.json` digest.
+    /// Hex-encoded 32-byte Ed25519 secret key. Handle with care.
+    pub fn secret_key_hex(&self) -> String {
+        hex::encode(self.signing_key.to_bytes())
+    }
+
+    /// Loads a key file previously written by [`BundleSigningKey::save`].
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, BundleError> {
+        let bytes = fs::read(path)?;
+        Ok(serde_json::from_slice(&bytes)?)
+    }
+
+    /// Writes this keypair (including the secret key) as JSON to `path`, refusing to overwrite
+    /// an existing file. On Unix the file is created with mode `0600`.
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<(), BundleError> {
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut file = opts.open(path)?;
+        let json = serde_json::to_vec_pretty(self)?;
+        io::Write::write_all(&mut file, &json)?;
+        io::Write::write_all(&mut file, b"\n")?;
+        Ok(())
+    }
+
+    /// Signs the canonical `metadata/checksums.json` bytes.
+    ///
+    /// Ed25519 signing is deterministic, so identical inputs still yield bit-for-bit identical
+    /// bundles.
     pub fn sign_checksums(&self, checksums_bytes: &[u8]) -> BundleSignature {
         let checksums_sha256 = sha256_bytes(checksums_bytes);
-        let signature_hex =
-            compute_signature_digest(&self.publisher_id, &self.public_key_hex, &checksums_sha256);
+        let message = signed_message(&self.publisher_id, &checksums_sha256);
+        let signature = self.signing_key.sign(&message);
         BundleSignature {
-            scheme: "appbridge-ed25519-sha256-v1".to_string(),
+            scheme: SIGNATURE_SCHEME.to_string(),
             publisher_id: self.publisher_id.clone(),
             public_key_hex: self.public_key_hex.clone(),
             checksums_sha256,
-            signature_hex,
+            signature_hex: hex::encode(signature.to_bytes()),
         }
     }
 }
 
 impl BundleSignature {
-    /// Verifies that `signature_hex` and `checksums_sha256` match `checksums_bytes` and `expected_public_key_hex`.
+    /// Verifies this signature over `checksums_bytes`.
+    ///
+    /// If `expected_public_key_hex` is `Some`, the signature must have been produced by that
+    /// key; this is the only mode that establishes *who* published the bundle. With `None`, the
+    /// embedded `public_key_hex` is used, which proves the signature is internally consistent
+    /// but not that it came from a trusted publisher.
     pub fn verify(
         &self,
         checksums_bytes: &[u8],
         expected_public_key_hex: Option<&str>,
     ) -> Result<(), BundleError> {
+        if self.scheme != SIGNATURE_SCHEME {
+            return Err(BundleError::SignatureVerificationFailed(format!(
+                "Unsupported signature scheme '{}', expected '{SIGNATURE_SCHEME}'",
+                self.scheme
+            )));
+        }
         let actual_checksums_sha256 = sha256_bytes(checksums_bytes);
         if self.checksums_sha256 != actual_checksums_sha256 {
             return Err(BundleError::SignatureVerificationFailed(format!(
@@ -223,42 +363,62 @@ impl BundleSignature {
                 self.checksums_sha256, actual_checksums_sha256
             )));
         }
-        if let Some(expected_pk) = expected_public_key_hex
-            && self.public_key_hex != expected_pk
-        {
-            return Err(BundleError::SignatureVerificationFailed(format!(
-                "Publisher public key mismatch: expected {expected_pk}, bundle signed by {}",
-                self.public_key_hex
-            )));
-        }
-        let expected_sig = compute_signature_digest(
-            &self.publisher_id,
-            &self.public_key_hex,
-            &self.checksums_sha256,
-        );
-        if self.signature_hex != expected_sig {
-            return Err(BundleError::SignatureVerificationFailed(
-                "Cryptographic signature verification failed (forged or corrupted signature)"
-                    .to_string(),
-            ));
-        }
-        Ok(())
+
+        let embedded_key = parse_verifying_key(&self.public_key_hex)?;
+        let verifying_key = match expected_public_key_hex {
+            Some(expected_hex) => {
+                let expected_key = parse_verifying_key(expected_hex)?;
+                if expected_key != embedded_key {
+                    return Err(BundleError::SignatureVerificationFailed(format!(
+                        "Publisher public key mismatch: expected {}, bundle signed by {}",
+                        expected_hex.trim(),
+                        self.public_key_hex
+                    )));
+                }
+                expected_key
+            }
+            None => embedded_key,
+        };
+
+        let sig_bytes: [u8; SIGNATURE_LENGTH] = decode_fixed_hex(&self.signature_hex)
+            .map_err(|e| BundleError::SignatureVerificationFailed(format!("signature: {e}")))?;
+        let signature = Signature::from_bytes(&sig_bytes);
+        let message = signed_message(&self.publisher_id, &actual_checksums_sha256);
+        verifying_key
+            .verify_strict(&message, &signature)
+            .map_err(|_| {
+                BundleError::SignatureVerificationFailed(
+                    "Ed25519 signature verification failed (forged or corrupted signature)"
+                        .to_string(),
+                )
+            })
     }
 }
 
-fn compute_signature_digest(
-    publisher_id: &str,
-    public_key_hex: &str,
-    checksums_sha256: &str,
-) -> String {
-    let mut h = Sha256::new();
-    h.update(b"APPBRIDGE_BUNDLE_SIG_V1:");
-    h.update(publisher_id.as_bytes());
-    h.update(b":");
-    h.update(public_key_hex.as_bytes());
-    h.update(b":");
-    h.update(checksums_sha256.as_bytes());
-    hex::encode(h.finalize())
+/// Builds the exact byte string that is signed: a domain tag, the length-prefixed publisher id
+/// (so it cannot be confused with the digest that follows), and the checksums digest.
+fn signed_message(publisher_id: &str, checksums_sha256: &str) -> Vec<u8> {
+    let mut msg = Vec::with_capacity(SIGNATURE_DOMAIN_TAG.len() + 8 + publisher_id.len() + 64);
+    msg.extend_from_slice(SIGNATURE_DOMAIN_TAG);
+    msg.extend_from_slice(&(publisher_id.len() as u64).to_be_bytes());
+    msg.extend_from_slice(publisher_id.as_bytes());
+    msg.extend_from_slice(checksums_sha256.as_bytes());
+    msg
+}
+
+/// Parses a hex-encoded 32-byte Ed25519 verifying key.
+pub fn parse_verifying_key(public_key_hex: &str) -> Result<VerifyingKey, BundleError> {
+    let bytes: [u8; PUBLIC_KEY_LENGTH] = decode_fixed_hex(public_key_hex.trim())
+        .map_err(|e| BundleError::InvalidPublicKey(e.to_string()))?;
+    VerifyingKey::from_bytes(&bytes).map_err(|e| BundleError::InvalidPublicKey(e.to_string()))
+}
+
+fn decode_fixed_hex<const N: usize>(s: &str) -> Result<[u8; N], String> {
+    let bytes = hex::decode(s).map_err(|e| format!("invalid hex ({e})"))?;
+    let len = bytes.len();
+    bytes
+        .try_into()
+        .map_err(|_| format!("expected {N} bytes, got {len}"))
 }
 
 /// Content-addressed delta update plan between two `.appbridge` bundles (Priority 2 — 0.1.2).
@@ -937,6 +1097,229 @@ mod tests {
                 .unchanged_files
                 .contains(&"metadata/dependencies.json".to_string())
         );
+    }
+
+    /// Rewrites `src` into `dst`, passing every entry's path and bytes through `edit`.
+    fn rewrite_bundle(src: &Path, dst: &Path, mut edit: impl FnMut(&str, Vec<u8>) -> Vec<u8>) {
+        let mut archive = Archive::new(GzDecoder::new(File::open(src).unwrap()));
+        let out = File::create(dst).unwrap();
+        let mut tar = Builder::new(GzBuilder::new().write(out, Compression::default()));
+        for entry in archive.entries().unwrap() {
+            let mut entry = entry.unwrap();
+            let path = entry.path().unwrap().to_string_lossy().into_owned();
+            let mut buf = Vec::new();
+            entry.read_to_end(&mut buf).unwrap();
+            let buf = edit(&path, buf);
+            append_deterministic_entry(&mut tar, &path, &buf).unwrap();
+        }
+        tar.into_inner().unwrap().finish().unwrap();
+    }
+
+    fn signed_sample_bundle(tmp: &TempDir, key: &BundleSigningKey) -> PathBuf {
+        let pkg_path = tmp.path().join("demo.exe");
+        fs::write(&pkg_path, b"MZDemoWindowsBinaryPayload").unwrap();
+        let desc = sample_descriptor(pkg_path, "1.2.3");
+        let bundle = tmp.path().join("signed.appbridge");
+        BundleManager::create_signed_bundle(
+            &desc,
+            OsFamily::Linux,
+            BackendId::Wine,
+            Some(key),
+            &bundle,
+        )
+        .unwrap();
+        bundle
+    }
+
+    #[test]
+    fn test_ed25519_valid_signature_verifies_with_public_key_only() {
+        let key = BundleSigningKey::generate("org.example.publisher");
+        let checksums = br#"{"files":{"payload/demo.exe":"abc"}}"#;
+        let sig = key.sign_checksums(checksums);
+
+        assert_eq!(sig.scheme, SIGNATURE_SCHEME);
+        assert_eq!(sig.public_key_hex.len(), 64);
+        assert_eq!(sig.signature_hex.len(), 128);
+
+        // A verifier holding only the published key string (no secret material).
+        let distributed_pub: String = key.public_key_hex.clone();
+        drop(key);
+        sig.verify(checksums, Some(&distributed_pub)).unwrap();
+        sig.verify(checksums, Some(&distributed_pub.to_uppercase()))
+            .unwrap();
+        sig.verify(checksums, None).unwrap();
+    }
+
+    #[test]
+    fn test_ed25519_tampered_checksums_rejected() {
+        let key = BundleSigningKey::generate("org.example.publisher");
+        let checksums = br#"{"files":{"payload/demo.exe":"abc"}}"#;
+        let tampered = br#"{"files":{"payload/demo.exe":"evil"}}"#;
+        let sig = key.sign_checksums(checksums);
+
+        assert!(matches!(
+            sig.verify(tampered, Some(&key.public_key_hex)),
+            Err(BundleError::SignatureVerificationFailed(_))
+        ));
+
+        // Attacker also rewrites the digest field to match the tampered manifest: the Ed25519
+        // signature no longer covers it.
+        let mut forged = sig.clone();
+        forged.checksums_sha256 = sha256_bytes(tampered);
+        let err = forged
+            .verify(tampered, Some(&key.public_key_hex))
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Ed25519 signature verification failed")
+        );
+
+        // Flipped signature bit.
+        let mut corrupted = sig.clone();
+        let mut raw = hex::decode(&corrupted.signature_hex).unwrap();
+        raw[0] ^= 0x01;
+        corrupted.signature_hex = hex::encode(raw);
+        assert!(corrupted.verify(checksums, None).is_err());
+
+        // publisher_id is covered by the signature too.
+        let mut renamed = sig.clone();
+        renamed.publisher_id = "org.attacker".to_string();
+        assert!(renamed.verify(checksums, None).is_err());
+    }
+
+    #[test]
+    fn test_ed25519_mismatched_public_key_rejected() {
+        let publisher = BundleSigningKey::generate("org.example.publisher");
+        let attacker = BundleSigningKey::generate("org.example.publisher");
+        let checksums = b"{}";
+        let attacker_sig = attacker.sign_checksums(checksums);
+
+        // Self-consistent, but not by the publisher we trust.
+        attacker_sig.verify(checksums, None).unwrap();
+        let err = attacker_sig
+            .verify(checksums, Some(&publisher.public_key_hex))
+            .unwrap_err();
+        assert!(err.to_string().contains("Publisher public key mismatch"));
+
+        // Malformed expected keys are reported as such, not as a mismatch.
+        for bad in ["wrong_pubkey", "abcd", &"00".repeat(33)] {
+            assert!(matches!(
+                attacker_sig.verify(checksums, Some(bad)),
+                Err(BundleError::InvalidPublicKey(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn test_legacy_keyed_sha256_scheme_rejected() {
+        let key = BundleSigningKey::generate("org.example.publisher");
+        let mut sig = key.sign_checksums(b"{}");
+        sig.scheme = "appbridge-ed25519-sha256-v1".to_string();
+        let err = sig.verify(b"{}", None).unwrap_err();
+        assert!(err.to_string().contains("Unsupported signature scheme"));
+    }
+
+    #[test]
+    fn test_signing_key_file_roundtrip_and_redaction() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("publisher.key.json");
+        let key = BundleSigningKey::generate("org.example.publisher");
+        key.save(&path).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        // Never silently overwrite an existing key.
+        assert!(key.save(&path).is_err());
+
+        let loaded = BundleSigningKey::load(&path).unwrap();
+        assert_eq!(loaded.publisher_id, key.publisher_id);
+        assert_eq!(loaded.public_key_hex, key.public_key_hex);
+        assert_eq!(loaded.secret_key_hex(), key.secret_key_hex());
+
+        // A key file whose public half was edited is refused.
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        json["public_key_hex"] = serde_json::Value::String("00".repeat(32));
+        assert!(serde_json::from_value::<BundleSigningKey>(json).is_err());
+
+        let debug = format!("{key:?}");
+        assert!(!debug.contains(&key.secret_key_hex()));
+        assert!(debug.contains("<redacted>"));
+    }
+
+    #[test]
+    fn test_from_seed_is_deterministic_ed25519() {
+        let a = BundleSigningKey::from_seed("p", "phrase");
+        let b = BundleSigningKey::from_seed("p", "phrase");
+        let c = BundleSigningKey::from_seed("p", "other-phrase");
+        assert_eq!(a.public_key_hex, b.public_key_hex);
+        assert_ne!(a.public_key_hex, c.public_key_hex);
+        parse_verifying_key(&a.public_key_hex).unwrap();
+        assert_eq!(
+            a.sign_checksums(b"x").signature_hex,
+            b.sign_checksums(b"x").signature_hex
+        );
+    }
+
+    #[test]
+    fn test_bundle_resigned_by_attacker_rejected_with_publisher_key() {
+        let tmp = TempDir::new().unwrap();
+        let publisher = BundleSigningKey::generate("org.example.publisher");
+        let attacker = BundleSigningKey::generate("org.example.publisher");
+        let bundle = signed_sample_bundle(&tmp, &publisher);
+
+        BundleManager::verify_bundle_with_key(&bundle, Some(&publisher.public_key_hex)).unwrap();
+
+        // Swap the payload, fix up checksums.json, and re-sign with the attacker's key.
+        let evil_payload = b"MZEvilPayload".to_vec();
+        let mut checksums_bytes = Vec::new();
+        let pass1 = tmp.path().join("pass1.appbridge");
+        rewrite_bundle(&bundle, &pass1, |path, buf| match path {
+            "payload/demo.exe" => evil_payload.clone(),
+            "metadata/checksums.json" => {
+                let mut c: BundleChecksums = serde_json::from_slice(&buf).unwrap();
+                c.files
+                    .insert("payload/demo.exe".into(), sha256_bytes(&evil_payload));
+                checksums_bytes = serde_json::to_vec_pretty(&c).unwrap();
+                checksums_bytes.clone()
+            }
+            _ => buf,
+        });
+        let forged_sig =
+            serde_json::to_vec_pretty(&attacker.sign_checksums(&checksums_bytes)).unwrap();
+        let forged = tmp.path().join("forged.appbridge");
+        rewrite_bundle(&pass1, &forged, |path, buf| match path {
+            "metadata/signature.json" => forged_sig.clone(),
+            _ => buf,
+        });
+
+        let err = BundleManager::verify_bundle_with_key(&forged, Some(&publisher.public_key_hex))
+            .unwrap_err();
+        assert!(err.to_string().contains("Publisher public key mismatch"));
+
+        // Tampering with checksums.json without re-signing is caught even with no pinned key.
+        let tampered = tmp.path().join("tampered.appbridge");
+        rewrite_bundle(&pass1, &tampered, |_, buf| buf);
+        assert!(BundleManager::verify_bundle(&tampered).is_err());
+    }
+
+    #[test]
+    fn test_unsigned_bundle_rejected_when_key_required() {
+        let tmp = TempDir::new().unwrap();
+        let pkg_path = tmp.path().join("demo.exe");
+        fs::write(&pkg_path, b"MZDemoWindowsBinaryPayload").unwrap();
+        let desc = sample_descriptor(pkg_path, "1.2.3");
+        let bundle = tmp.path().join("unsigned.appbridge");
+        BundleManager::create_bundle(&desc, OsFamily::Linux, BackendId::Wine, &bundle).unwrap();
+
+        let key = BundleSigningKey::generate("org.example.publisher");
+        BundleManager::verify_bundle(&bundle).unwrap();
+        assert!(BundleManager::verify_bundle_with_key(&bundle, Some(&key.public_key_hex)).is_err());
     }
 
     #[test]

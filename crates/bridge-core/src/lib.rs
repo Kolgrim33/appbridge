@@ -561,14 +561,36 @@ impl AppBridgeEngine {
         backend_override: Option<BackendId>,
         output_path: impl AsRef<Path>,
     ) -> Result<(ConversionPlan, ConversionReceipt), CoreError> {
+        self.convert_signed(
+            path,
+            target,
+            target_os_override,
+            backend_override,
+            None,
+            output_path,
+        )
+    }
+
+    /// Like [`AppBridgeEngine::convert`], but signs `.appbridge` output with an Ed25519
+    /// publisher `signing_key` (`appbridge convert --sign-key <key-file>`).
+    pub fn convert_signed(
+        &self,
+        path: impl AsRef<Path>,
+        target: ConversionTarget,
+        target_os_override: Option<OsFamily>,
+        backend_override: Option<BackendId>,
+        signing_key: Option<&BundleSigningKey>,
+        output_path: impl AsRef<Path>,
+    ) -> Result<(ConversionPlan, ConversionReceipt), CoreError> {
         let descriptor = self.inspect(path)?;
         let converter = ConversionEngine::new();
-        let (plan, receipt) = converter.convert(
+        let (plan, receipt) = converter.convert_signed(
             &descriptor,
             target,
             target_os_override,
             backend_override,
             &self.host,
+            signing_key,
             &output_path,
         )?;
         self.registry.record_audit(
@@ -592,6 +614,19 @@ impl AppBridgeEngine {
         bundle_path: impl AsRef<Path>,
     ) -> Result<BundleVerificationReport, CoreError> {
         Ok(BundleManager::verify_bundle(bundle_path)?)
+    }
+
+    /// Verify a `.appbridge` bundle and, when `expected_public_key_hex` is `Some`, require a
+    /// valid Ed25519 publisher signature from exactly that key.
+    pub fn verify_bundle_with_key(
+        &self,
+        bundle_path: impl AsRef<Path>,
+        expected_public_key_hex: Option<&str>,
+    ) -> Result<BundleVerificationReport, CoreError> {
+        Ok(BundleManager::verify_bundle_with_key(
+            bundle_path,
+            expected_public_key_hex,
+        )?)
     }
 
     /// CONVERSION ENGINE Mode C (`appbridge build <source> --target <platform>`):
