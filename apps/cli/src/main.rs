@@ -1,9 +1,10 @@
 //! `appbridge`: Command-Line Interface for the AppBridge Dual-Engine Application Portability Platform.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bridge_core::{
-    AppBridgeEngine, BackendId, BridgeRecipe, CompatibilityEntry, CompatibilityTrustLevel,
-    ConversionTarget, CpuArch, ExecutionMode, LinuxDistro, OsFamily, VerificationStatus,
+    AppBridgeEngine, BackendId, BridgeRecipe, BundleSigningKey, CompatibilityEntry,
+    CompatibilityTrustLevel, ConversionTarget, CpuArch, ExecutionMode, LinuxDistro, OsFamily,
+    VerificationStatus,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use std::fs;
@@ -97,6 +98,10 @@ enum Commands {
         /// Output file path (e.g., `application.pkg.tar.zst` or `application.appbridge`)
         #[arg(short, long)]
         output: PathBuf,
+
+        /// Sign the `.appbridge` bundle with this Ed25519 key file (created by `appbridge keygen`)
+        #[arg(long, value_name = "KEY_FILE")]
+        sign_key: Option<PathBuf>,
     },
 
     /// CONVERSION ENGINE (Mode C): Build a native version for another platform when source code is available
@@ -117,6 +122,25 @@ enum Commands {
     VerifyBundle {
         /// Path to the `.appbridge` bundle file
         bundle: PathBuf,
+
+        /// Require a valid signature from this Ed25519 public key (64 hex chars, or a path to a `.pub` file)
+        #[arg(long, value_name = "HEX_OR_FILE")]
+        verify_pub: Option<String>,
+    },
+
+    /// Generate an Ed25519 publisher keypair for signing `.appbridge` bundles
+    Keygen {
+        /// Publisher identifier recorded in every signature (e.g., `org.example.publisher`)
+        #[arg(long)]
+        publisher: String,
+
+        /// Where to write the secret key file (never overwritten; mode 0600 on Unix)
+        #[arg(short, long)]
+        output: PathBuf,
+
+        /// Where to write the public key (defaults to `<output>.pub`)
+        #[arg(long)]
+        pub_output: Option<PathBuf>,
     },
 
     /// Install an application package or `.appbridge` bundle into a managed compatibility environment
@@ -505,12 +529,21 @@ fn main() -> Result<()> {
             target,
             backend,
             output,
+            sign_key,
         } => {
-            let (plan, receipt) = engine.convert(
+            let signing_key = sign_key
+                .as_ref()
+                .map(|p| {
+                    BundleSigningKey::load(p)
+                        .with_context(|| format!("Failed to load signing key from {}", p.display()))
+                })
+                .transpose()?;
+            let (plan, receipt) = engine.convert_signed(
                 &input,
                 to.into(),
                 target.map(Into::into),
                 backend.map(Into::into),
+                signing_key.as_ref(),
                 &output,
             )?;
             if cli.json {
@@ -531,6 +564,12 @@ fn main() -> Result<()> {
                 );
                 println!("Output File   : {}", receipt.output_path.display());
                 println!("Output SHA256 : {}", receipt.output_sha256);
+                if let Some(key) = &signing_key {
+                    println!(
+                        "Signed By     : {} (ed25519 {})",
+                        key.publisher_id, key.public_key_hex
+                    );
+                }
                 if !receipt.mapped_dependencies.is_empty() {
                     println!("Mapped Deps   : {}", receipt.mapped_dependencies.join(", "));
                 }
@@ -569,8 +608,9 @@ fn main() -> Result<()> {
             }
         }
 
-        Commands::VerifyBundle { bundle } => {
-            let report = engine.verify_bundle(&bundle)?;
+        Commands::VerifyBundle { bundle, verify_pub } => {
+            let expected_pub = verify_pub.as_deref().map(resolve_public_key).transpose()?;
+            let report = engine.verify_bundle_with_key(&bundle, expected_pub.as_deref())?;
             if cli.json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -583,7 +623,59 @@ fn main() -> Result<()> {
                 println!("Deployment    : {:?}", report.manifest.deployment_kind);
                 println!("Backend       : {}", report.manifest.required_backend);
                 println!("Integrity OK  : {}", report.integrity_ok);
+                match (&report.signature, &expected_pub) {
+                    (Some(sig), Some(_)) => println!(
+                        "Signature     : VALID, trusted key ({}, ed25519 {})",
+                        sig.publisher_id, sig.public_key_hex
+                    ),
+                    (Some(sig), None) => println!(
+                        "Signature     : valid but UNTRUSTED ({}, ed25519 {}); pass --verify-pub to pin the publisher key",
+                        sig.publisher_id, sig.public_key_hex
+                    ),
+                    (None, _) => println!("Signature     : unsigned"),
+                }
                 println!("Verified Files: {}", report.verified_files.join(", "));
+            }
+        }
+
+        Commands::Keygen {
+            publisher,
+            output,
+            pub_output,
+        } => {
+            let pub_output = pub_output.unwrap_or_else(|| {
+                let mut p = output.clone().into_os_string();
+                p.push(".pub");
+                PathBuf::from(p)
+            });
+            if pub_output.exists() {
+                anyhow::bail!(
+                    "Refusing to overwrite existing public key file {}",
+                    pub_output.display()
+                );
+            }
+            let key = BundleSigningKey::generate(publisher);
+            key.save(&output)
+                .with_context(|| format!("Failed to write secret key to {}", output.display()))?;
+            fs::write(&pub_output, format!("{}\n", key.public_key_hex)).with_context(|| {
+                format!("Failed to write public key to {}", pub_output.display())
+            })?;
+            if cli.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "publisher_id": key.publisher_id,
+                        "public_key_hex": key.public_key_hex,
+                        "secret_key_path": output,
+                        "public_key_path": pub_output,
+                    }))?
+                );
+            } else {
+                println!("=== AppBridge Publisher Keygen (Ed25519) ===");
+                println!("Publisher     : {}", key.publisher_id);
+                println!("Public Key    : {}", key.public_key_hex);
+                println!("Secret Key    : {} (keep private)", output.display());
+                println!("Public Key At : {} (distribute this)", pub_output.display());
             }
         }
 
@@ -846,4 +938,16 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Accepts either a 64-char hex Ed25519 public key or a path to a file containing one.
+fn resolve_public_key(value: &str) -> Result<String> {
+    let path = std::path::Path::new(value);
+    if path.is_file() {
+        let contents = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read public key file {}", path.display()))?;
+        Ok(contents.trim().to_string())
+    } else {
+        Ok(value.trim().to_string())
+    }
 }

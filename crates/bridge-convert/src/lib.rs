@@ -5,7 +5,7 @@
 //! - Mode B: Universal AppBridge Bundling (`.appbridge` via `bridge-bundle`)
 //! - Strict conversion validation (rejecting cross-OS binary masquerading or unsafe maintainer scripts)
 
-use bridge_bundle::{BundleError, BundleManager};
+use bridge_bundle::{BundleError, BundleManager, BundleSigningKey};
 use bridge_detect::HostProfile;
 use bridge_planner::{CompatibilityPlanner, ConversionPlan};
 use bridge_security::{SecurityEngine, SecurityError};
@@ -43,6 +43,9 @@ pub enum ConvertError {
         target: ConversionTarget,
         reason: String,
     },
+
+    #[error("Publisher signing is only supported for .appbridge output, not '{0}'")]
+    SigningUnsupported(ConversionTarget),
 }
 
 /// Receipt returned after a successful package conversion or bundling operation.
@@ -93,6 +96,35 @@ impl ConversionEngine {
         host: &HostProfile,
         output_path: impl AsRef<Path>,
     ) -> Result<(ConversionPlan, ConversionReceipt), ConvertError> {
+        self.convert_signed(
+            descriptor,
+            target,
+            target_os_override,
+            backend_override,
+            host,
+            None,
+            output_path,
+        )
+    }
+
+    /// Like [`ConversionEngine::convert`], but signs `.appbridge` output with `signing_key`.
+    ///
+    /// Supplying a key for a target other than [`ConversionTarget::AppBridge`] is an error, so a
+    /// caller never believes an unsigned artifact was signed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn convert_signed(
+        &self,
+        descriptor: &ApplicationDescriptor,
+        target: ConversionTarget,
+        target_os_override: Option<OsFamily>,
+        backend_override: Option<BackendId>,
+        host: &HostProfile,
+        signing_key: Option<&BundleSigningKey>,
+        output_path: impl AsRef<Path>,
+    ) -> Result<(ConversionPlan, ConversionReceipt), ConvertError> {
+        if signing_key.is_some() && target != ConversionTarget::AppBridge {
+            return Err(ConvertError::SigningUnsupported(target));
+        }
         let plan = self
             .planner
             .create_conversion_plan(descriptor, target, host);
@@ -125,8 +157,13 @@ impl ConversionEngine {
                     .or(run_plan.recommended_backend)
                     .unwrap_or(BackendId::Native);
 
-                let manifest =
-                    BundleManager::create_bundle(descriptor, target_os, backend, output_path)?;
+                let manifest = BundleManager::create_signed_bundle(
+                    descriptor,
+                    target_os,
+                    backend,
+                    signing_key,
+                    output_path,
+                )?;
                 let sha256 = SecurityEngine::compute_sha256(output_path)?;
 
                 let receipt = ConversionReceipt {

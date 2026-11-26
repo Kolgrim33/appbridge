@@ -58,6 +58,11 @@ When `BundleBuildOptions::reproducible` is `true` (the default):
   1. Enforces `ExtractionLimits` (`bridge-security`) against path traversal (`..`), symlink escapes, hardlinks, device nodes, setuid/setgid bits, and zip-bomb quotas.
   2. Verifies every file listed in `metadata/checksums.json` against its live SHA-256 hash.
   3. Rejects any archive containing unlisted members outside `checksums.json` (`metadata/signature.json` is the sole permitted detached post-checksum entry).
-  4. Validates the publisher signature against `metadata/checksums.json` when present or required.
+  4. Validates the publisher signature against `metadata/checksums.json` when present or required. Only a caller-supplied public key (`verify_bundle_with_key(.., Some(pk))`, `appbridge verify-bundle --verify-pub`) establishes *who* signed; without one, the embedded key proves internal consistency only.
+- **Publisher Signatures (`metadata/signature.json`, scheme `ed25519-v2`)**:
+  - Keys are Ed25519 (`ed25519-dalek`). Generate with `appbridge keygen --publisher <id> -o publisher.key`; distribute only `publisher.key.pub` (64 hex chars). Sign with `appbridge convert ... --to appbridge --sign-key publisher.key`.
+  - Fields: `scheme`, `publisher_id`, `public_key_hex` (32 bytes), `checksums_sha256` (hex SHA-256 of the exact `checksums.json` bytes), `signature_hex` (64 bytes).
+  - Signed message: `"APPBRIDGE_BUNDLE_SIG_V2\0" || u64_be(len(publisher_id)) || publisher_id || checksums_sha256` (the digest as its lowercase hex ASCII string). Verification uses `verify_strict`.
+  - Ed25519 signing is deterministic, so signed bundles stay bit-for-bit reproducible. Signatures using the earlier keyed-SHA-256 scheme (`appbridge-ed25519-sha256-v1`) are rejected.
 - **Delta Updates (`BundleManager::compute_delta`)**:
   - Compares `metadata/checksums.json` between two `.appbridge` versions (`old_bundle` vs. `new_bundle`) and emits a `BundleDeltaPlan` listing unchanged, modified, added, and removed files along with exact byte savings (`transfer_savings_percent`).

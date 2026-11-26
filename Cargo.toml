@@ -44,6 +44,8 @@ clap = { version = "4.5", features = ["derive"] }
 goblin = "0.9"
 sha2 = "0.10"
 hex = "0.4"
+ed25519-dalek = { version = "2.2", features = ["rand_core"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
